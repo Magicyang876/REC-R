@@ -1,5 +1,9 @@
 # rec-r
 
+[![CI](https://github.com/Magicyang876/REC-R/actions/workflows/ci.yml/badge.svg)](https://github.com/Magicyang876/REC-R/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Magicyang876/REC-R)](https://github.com/Magicyang876/REC-R/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Windows 上的截图 / 录屏工具，用 Rust 写，FFmpeg 负责编码，并把能力以 **MCP server** 的形式暴露给 agent。
 
 - 截图：显示器 / 窗口 / 任意矩形 / 整个虚拟桌面
