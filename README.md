@@ -43,9 +43,19 @@ Windows 上的截图 / 录屏工具，用 Rust 写，FFmpeg 负责编码，并�
 cargo build --release        # → target/release/rec-r.exe
 ```
 
-`.cargo/config.toml` 指定的 linker 是 `C:/Users/admin/scoop/apps/mingw/current/bin/gcc.exe`，
-换机器改这一行（或改成 `C:/msys64/mingw64/bin/gcc.exe`）。用 MSVC 工具链也行，删掉
-`rust-toolchain.toml` 和 `.cargo/config.toml` 里对应条目即可。
+`.cargo/config.toml`（指定 linker）是机器相关的，所以**不进版本库**——仓库里只放
+`.cargo/config.toml.example`。新机器上二选一：
+
+```bash
+# 方式一：复制一份再改 linker 那一行
+cp .cargo/config.toml.example .cargo/config.toml
+
+# 方式二：干脆不要配置文件，用环境变量（优先级高于配置文件）
+export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=C:/msys64/mingw64/bin/gcc.exe
+```
+
+用 MSVC 工具链也行：删掉 `rust-toolchain.toml` 和 `.cargo/config.toml` 里对应条目即可
+（MSVC 自带链接器，不需要 gcc）。
 
 ### 安装到系统
 

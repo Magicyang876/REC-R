@@ -1,0 +1,12 @@
+# Copy this file to `.cargo/config.toml` and adapt the linker to wherever
+# mingw-w64 lives on your machine. `.cargo/config.toml` itself is NOT tracked
+# (see .gitignore) because the linker path is machine-specific.
+
+[target.x86_64-pc-windows-gnu]
+# Either uncomment and fix this line ...
+# linker = "C:/msys64/mingw64/bin/gcc.exe"
+#
+# ... or leave it out entirely and set the environment variable instead; cargo
+# gives the environment precedence over any value in this file:
+#   set CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=C:\msys64\mingw64\bin\gcc.exe
+rustflags = ["-C", "link-arg=-Wl,--dynamicbase"]
