@@ -11,9 +11,13 @@ import os
 import subprocess
 import sys
 
-DEFAULT = (
-    r"C:\Users\admin\AppData\Roaming\npm\node_modules"
-    r"\agent-desktop\bin\agent-desktop-win32-x64.exe"
+DEFAULT = os.path.join(
+    os.environ.get("APPDATA", os.path.expanduser("~")),
+    "npm",
+    "node_modules",
+    "agent-desktop",
+    "bin",
+    "agent-desktop-win32-x64.exe",
 )
 
 

@@ -403,7 +403,7 @@ Windows 应用，**默认 headless 语义投递**：`snapshot` / `click` / `type
 不抢前台，只有 `hover` / `drag` / `mouse-*` / `--headed` 才会真的操作鼠标。给它开 MCP：
 
 ```bash
-pi mcp add agent-desktop -- "C:/Users/admin/AppData/Roaming/npm/node_modules/agent-desktop/bin/agent-desktop-win32-x64.exe" mcp
+pi mcp add agent-desktop -- "$APPDATA/npm/node_modules/agent-desktop/bin/agent-desktop-win32-x64.exe" mcp
 pi mcp list      # agent-desktop: connected, 75 tools
 ```
 
@@ -438,3 +438,7 @@ python scripts/agent_desktop_mcp_check.py             # 握手 + tools/list + de
   不需要管理员权限；同一台机器多个用户要各装一次。
 - 装完的 PATH 只对**之后启动**的进程生效，已经开着的终端/编辑器要重启才能敲 `rec-r`
   （已经在运行的托盘 app 不受影响，它跑的是安装前那份内存镜像）。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。可以自由使用、修改、商用和再分发，保留版权声明即可。
