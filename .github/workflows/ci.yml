@@ -13,7 +13,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # The repo pins the gnu toolchain (rust-toolchain.toml); point rustc at msys2's gcc.
+  # The runner's rustup is 2.x and rejects the `stable-x86_64-pc-windows-gnu`
+  # channel name in rust-toolchain.toml, so pin the toolchain by env var and
+  # cross-compile to the same target the repo builds for locally.
+  RUSTUP_TOOLCHAIN: stable
   CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: C:\msys64\mingw64\bin\gcc.exe
 
 jobs:
@@ -30,10 +33,11 @@ jobs:
           install: mingw-w64-x86_64-gcc
           path-type: inherit
 
-      - name: Show toolchain versions
+      - name: Prepare toolchain
         run: |
-          rustc --version
-          cargo --version
+          rustup --version
+          rustup target add x86_64-pc-windows-gnu
+          rustup component add clippy
           gcc --version | head -1
           ld --version | head -1
 
@@ -42,21 +46,21 @@ jobs:
           cache-on-failure: true
 
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked --target x86_64-pc-windows-gnu
 
       - name: Clippy
-        run: cargo clippy --release --all-targets --locked
+        run: cargo clippy --release --all-targets --locked --target x86_64-pc-windows-gnu
 
       # A broken import table (seen with GNU ld 2.47) crashes before argument
       # parsing, so running --help is a real link sanity check.
       - name: Smoke test
         run: |
-          .\target\release\rec-r.exe --help
-          .\target\release\rec-r.exe autostart status --json
+          .\target\x86_64-pc-windows-gnu\release\rec-r.exe --help
+          .\target\x86_64-pc-windows-gnu\release\rec-r.exe autostart status --json
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: rec-r-${{ github.sha }}
-          path: target/release/rec-r.exe
+          path: target/x86_64-pc-windows-gnu/release/rec-r.exe
           if-no-files-found: error

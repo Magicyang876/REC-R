@@ -14,6 +14,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # rustup 2.x on the runner rejects the `stable-x86_64-pc-windows-gnu` channel
+  # name in rust-toolchain.toml, so pin by env var and cross-compile instead.
+  RUSTUP_TOOLCHAIN: stable
   CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: C:\msys64\mingw64\bin\gcc.exe
 
 jobs:
@@ -32,20 +35,26 @@ jobs:
           install: mingw-w64-x86_64-gcc
           path-type: inherit
 
+      - name: Prepare toolchain
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          gcc --version | head -1
+          ld --version | head -1
+
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
 
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked --target x86_64-pc-windows-gnu
 
       # A broken import table (GNU ld 2.47 has produced one) crashes before
       # argument parsing, so this must fail the release rather than ship a
       # binary that segfaults on start.
       - name: Smoke test
         run: |
-          .\target\release\rec-r.exe --help
-          .\target\release\rec-r.exe autostart status --json
+          .\target\x86_64-pc-windows-gnu\release\rec-r.exe --help
+          .\target\x86_64-pc-windows-gnu\release\rec-r.exe autostart status --json
 
       - name: Package
         id: package
@@ -55,7 +64,7 @@ jobs:
           version="${tag#v}"
           name="rec-r-${version}-x86_64-pc-windows-gnu"
           mkdir -p dist
-          cp target/release/rec-r.exe "dist/${name}.exe"
+          cp target/x86_64-pc-windows-gnu/release/rec-r.exe "dist/${name}.exe"
           (cd dist && sha256sum "${name}.exe" > "${name}.exe.sha256")
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "name=${name}" >> "$GITHUB_OUTPUT"
