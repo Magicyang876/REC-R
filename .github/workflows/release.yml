@@ -17,7 +17,6 @@ env:
   # rustup 2.x on the runner rejects the `stable-x86_64-pc-windows-gnu` channel
   # name in rust-toolchain.toml, so pin by env var and cross-compile instead.
   RUSTUP_TOOLCHAIN: stable
-  CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: C:\msys64\mingw64\bin\gcc.exe
 
 jobs:
   release:
@@ -31,6 +30,7 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
+          suppress-deprecation-warnings: msystem-mingw64
           update: false
           install: mingw-w64-x86_64-gcc
           path-type: inherit
@@ -40,6 +40,15 @@ jobs:
           rustup target add x86_64-pc-windows-gnu
           gcc --version | head -1
           ld --version | head -1
+
+      # setup-msys2 unpacks its own MSYS2 somewhere under D:\a\_temp, not
+      # C:\msys64, so the linker path has to come from the resolved gcc.
+      - name: Point cargo at the mingw gcc
+        shell: pwsh
+        run: |
+          $gcc = (Get-Command gcc).Source
+          Write-Host "linker: $gcc"
+          "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=$gcc" >> $env:GITHUB_ENV
 
       - uses: Swatinem/rust-cache@v2
         with:
