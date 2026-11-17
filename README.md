@@ -7,6 +7,19 @@ Windows 上的截图 / 录屏工具，用 Rust 写，FFmpeg 负责编码，并�
 - 托盘 GUI：右键菜单 + 全局快捷键 + 拖拽选区浮层
 - MCP：stdio 或 Streamable HTTP，10 个工具，可直接接 Claude Code / Codex / Cursor 等
 
+## 下载
+
+不想自己编译就用 [Releases](https://github.com/Magicyang876/REC-R/releases/latest) 里的单文件 exe
+（Windows 10 1809+ / 11 x64，仍需本机有 `ffmpeg`）：
+
+```powershell
+# 装到 %LOCALAPPDATA%\Programs\Rec-R，加 PATH 和开始菜单快捷方式
+.\rec-r-0.1.0-x86_64-pc-windows-gnu.exe install
+.\rec-r-0.1.0-x86_64-pc-windows-gnu.exe install --autostart --http   # 顺手开机自启 + 开 MCP HTTP
+```
+
+也可以不安装：exe 放哪都行，双击进托盘，或 `rec-r shot` / `rec-r serve --stdio` 直接用。
+
 ## 为什么捕获不走 `gdigrab`
 
 `gdigrab` 能用（7.1.5 在这台 125% DPI 的机器上抓全屏是像素精确的，实测与我们自己的抓取 SSIM 0.9994），
