@@ -88,6 +88,7 @@ jobs:
           prerelease: false
           generate_release_notes: true
           fail_on_unmatched_files: true
+          overwrite_files: true
           files: |
             dist/${{ steps.package.outputs.name }}.exe
             dist/${{ steps.package.outputs.name }}.exe.sha256
