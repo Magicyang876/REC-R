@@ -54,6 +54,25 @@ cp .cargo/config.toml.example .cargo/config.toml
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=C:/msys64/mingw64/bin/gcc.exe
 ```
 
+### 如果编译出来的 exe 一启动就崩
+
+GNU ld 2.47（mingw-w64 16.2.0 自带）在合并同名 DLL 的多份 `.idata$2` 描述符时可能吞掉一部分，
+结果是导入表里少了 `TlsAlloc`、`CreateFileW`、`GetLastError` 这一批 std 用到的槽位——
+Windows 加载器不会填它们，于是启动瞬间跳到数据区，连 `--help` 都直接 `Segmentation fault`。
+
+判断方法：看 PE 的导入描述符数量和 std 的导入名是否齐全，坏产物通常比正常产物少 4~5 个
+`kernel32.dll` 描述符分组，`TlsAlloc` 的 IAT 槽位不在任何分组的范围内。
+
+绕开办法是用 rustup 自带的 LLVM 链接器（`rust-lld`）代替 GNU ld，不需要额外安装：
+
+```bash
+# rust-lld 伪装成 ld.lld，交给 gcc 调用
+mkdir -p /c/tmp/lldbin
+cp "$(rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-gnu/bin/rust-lld.exe" /c/tmp/lldbin/ld.lld.exe
+export RUSTFLAGS="-C link-arg=-B/c/tmp/lldbin -C link-arg=-fuse-ld=lld"
+cargo build --release
+```
+
 用 MSVC 工具链也行：删掉 `rust-toolchain.toml` 和 `.cargo/config.toml` 里对应条目即可
 （MSVC 自带链接器，不需要 gcc）。
 

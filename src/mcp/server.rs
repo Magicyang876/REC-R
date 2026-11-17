@@ -139,8 +139,9 @@ pub struct ListWindowsParams {
 pub struct ConfigParams {
     /// Config key to change (`fps`, `quality`, `hotkeys.shot`, `autostart`, ...).
     pub key: Option<String>,
-    /// New value for `key`.
-    pub value: Option<String>,
+    /// New value for `key`; a string, number or boolean are all accepted, so
+    /// `{"key": "fps", "value": 30}` works as well as `"30"`.
+    pub value: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -214,6 +215,19 @@ fn structured(value: Value) -> CallToolResult {
 
 fn failed(context: &str, e: impl std::fmt::Display) -> CallToolResult {
     CallToolResult::structured_error(json!({ "error": format!("{context}: {e}") }))
+}
+
+/// Settings are edited as text, but agents naturally write `30` or `true` in
+/// JSON. Accept the natural spelling and say what is wrong instead of failing
+/// deserialisation with "invalid type: integer, expected a string".
+fn value_to_text(value: &Value) -> anyhow::Result<String> {
+    match value {
+        Value::String(s) => Ok(s.clone()),
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Bool(b) => Ok(b.to_string()),
+        Value::Null => anyhow::bail!("`value` must not be null"),
+        other => anyhow::bail!("`value` must be a string, number or boolean, got {other}"),
+    }
 }
 
 impl RecServer {
@@ -426,16 +440,20 @@ impl RecServer {
 
     #[tool(
         name = "config",
-        description = "Read or change settings (config file + Run registry). Without `key` it returns the whole config plus autostart state. With `key` and `value` it persists one change, e.g. key=\"fps\" value=\"60\", key=\"hotkeys.shot\" value=\"Ctrl+Shift+5\", key=\"autostart\" value=\"on\", key=\"ffmpeg\" value=\"C:\\\\tools\\\\ffmpeg\\\\bin\\\\ffmpeg.exe\". Hotkey changes take effect after the tray app restarts."
+        description = "Read or change settings (config file + Run registry). Without `key` it returns the whole config plus autostart state. With `key` and `value` it persists one change, e.g. key=\"fps\" value=60, key=\"hotkeys.shot\" value=\"Ctrl+Shift+5\", key=\"autostart\" value=true, key=\"ffmpeg\" value=\"C:\\\\tools\\\\ffmpeg\\\\bin\\\\ffmpeg.exe\". `value` may be a JSON string, number or boolean. Hotkey changes take effect after the tray app restarts."
     )]
     async fn config(&self, Parameters(p): Parameters<ConfigParams>) -> CallToolResult {
         if let Some(key) = p.key.as_deref() {
-            let Some(value) = p.value.as_deref() else {
+            let Some(value) = p.value.as_ref() else {
                 return CallToolResult::error(vec![ContentBlock::text(
                     "`value` is required when `key` is given".to_string(),
                 )]);
             };
-            if let Err(e) = self.app.set_config(key, value) {
+            let value = match value_to_text(value) {
+                Ok(value) => value,
+                Err(e) => return CallToolResult::error(vec![ContentBlock::text(e.to_string())]),
+            };
+            if let Err(e) = self.app.set_config(key, &value) {
                 return failed(&format!("cannot set {key}"), e);
             }
         }

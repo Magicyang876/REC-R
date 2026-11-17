@@ -35,6 +35,17 @@ impl App {
         // A tray app started from Explorer sees a different PATH than the shell
         // that installed ffmpeg, so pin the absolute path here.
         crate::locate::resolve_ffmpeg(&mut config);
+        // `autostart: true` should mean the login entry actually works. A stale
+        // pointer (old `target\release` path, uninstalled copy) fails silently at
+        // every login, so repair it here. A missing entry is left alone: only an
+        // explicit `autostart` change creates one.
+        if config.autostart && crate::autostart::points_at_missing_exe() {
+            match crate::autostart::sync(true) {
+                Ok(Some(command)) => tracing::info!("autostart repointed at {command}"),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("cannot repair the autostart entry: {e:#}"),
+            }
+        }
         Ok(Self::new(config))
     }
 
@@ -61,9 +72,9 @@ impl App {
         cfg.save()?;
         let snapshot = cfg.clone();
         drop(cfg);
-        if snapshot.autostart != crate::autostart::is_enabled() {
-            crate::autostart::set_enabled(snapshot.autostart, false)?;
-        }
+        // `autostart` is mirrored into the Run registry. `sync` registers the
+        // *installed* exe (never the build directory) and repoints a stale entry.
+        crate::autostart::sync(snapshot.autostart)?;
         Ok(snapshot)
     }
 

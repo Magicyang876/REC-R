@@ -1,6 +1,6 @@
 //! Start-at-login support via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use windows::core::w;
 use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows::Win32::System::Registry::{
@@ -16,10 +16,23 @@ fn win32_error(what: &str, code: windows::Win32::Foundation::WIN32_ERROR) -> any
     anyhow::anyhow!("{what} failed: {e}")
 }
 
+/// The exe a login entry should point at: the copy `rec-r install` placed in
+/// `%LOCALAPPDATA%\Programs\Rec-R` when it exists, otherwise the running exe
+/// (portable use, `cargo run`).
+///
+/// Registering `target\release\rec-r.exe` would be a trap — `cargo clean`
+/// deletes it and then every login fails silently.
+pub fn preferred_exe() -> std::path::PathBuf {
+    let installed = crate::install::exe_in(&crate::install::default_dir());
+    if installed.is_file() {
+        return installed;
+    }
+    std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("rec-r.exe"))
+}
+
 /// `"C:\path\rec-r.exe" app [--http]`
 pub fn command_line(with_http: bool) -> Result<String> {
-    let exe = std::env::current_exe().context("locating the rec-r executable")?;
-    Ok(command_line_at(&exe, with_http))
+    Ok(command_line_at(&preferred_exe(), with_http))
 }
 
 /// Same as [`command_line`], for an explicit executable (used by `rec-r install`,
@@ -90,6 +103,51 @@ pub fn current() -> Option<String> {
 
 pub fn is_enabled() -> bool {
     current().is_some()
+}
+
+/// Executable the registered command line starts, if any.
+pub fn registered_exe() -> Option<std::path::PathBuf> {
+    let command = current()?;
+    let rest = command.trim();
+    let raw = match rest.strip_prefix('"') {
+        Some(quoted) => quoted.split('"').next()?,
+        None => rest.split_whitespace().next()?,
+    };
+    (!raw.is_empty()).then(|| std::path::PathBuf::from(raw))
+}
+
+/// True when the registered executable is gone — the entry still points at a
+/// `target\release` build that was cleaned, or at a copy that was uninstalled.
+pub fn points_at_missing_exe() -> bool {
+    matches!(registered_exe(), Some(exe) if !exe.is_file())
+}
+
+/// True when the registered command line also boots the MCP HTTP server.
+pub fn registered_http() -> bool {
+    current().is_some_and(|cmd| cmd.to_ascii_lowercase().contains("--http"))
+}
+
+/// Bring the Run entry in line with `want`, the value in the config file.
+///
+/// Turning it on registers [`preferred_exe`] (never a build directory), and an
+/// entry whose exe has vanished is repointed instead of left to fail at login;
+/// `--http` survives such a repair.
+///
+/// Returns the command line when the entry was written.
+pub fn sync(want: bool) -> Result<Option<String>> {
+    match (want, is_enabled()) {
+        (false, false) => Ok(None),
+        (false, true) => {
+            disable()?;
+            Ok(None)
+        }
+        (true, true) if !points_at_missing_exe() => Ok(None),
+        (true, _) => {
+            let command = command_line(registered_http())?;
+            apply(&command)?;
+            Ok(Some(command))
+        }
+    }
 }
 
 pub fn enable(with_http: bool) -> Result<String> {

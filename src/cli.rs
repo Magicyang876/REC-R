@@ -514,12 +514,10 @@ pub fn run(cli: Cli) -> Result<()> {
                     println!("set {key} = {value}");
                 }
                 cfg.save()?;
-                if cfg.autostart != crate::autostart::is_enabled() {
-                    crate::autostart::set_enabled(cfg.autostart, false)?;
-                    println!(
-                        "autostart: {}",
-                        if cfg.autostart { "enabled" } else { "disabled" }
-                    );
+                if let Some(command) = crate::autostart::sync(cfg.autostart)? {
+                    println!("autostart: enabled -> {command}");
+                } else if !cfg.autostart {
+                    println!("autostart: disabled");
                 }
                 eprintln!("// {}", path.display());
             }
