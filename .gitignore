@@ -1,0 +1,21 @@
+# Rust build output (5 GB of it; never commit)
+/target
+
+# Python caches from the verification scripts
+__pycache__/
+*.pyc
+
+# Runtime artefacts (rec-r.log and its rolled-over copy)
+*.log
+*.pdb
+*.ilk
+*.exp
+
+# Throwaway file produced when extracting frames from the .ico
+/assets/_extracted.png
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

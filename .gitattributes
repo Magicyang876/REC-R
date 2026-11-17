@@ -1,0 +1,6 @@
+# Keep the working tree byte-identical to what the Linux/mingw toolchain
+# produces: sources and scripts are LF, binaries are untouched.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary

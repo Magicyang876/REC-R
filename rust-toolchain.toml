@@ -1,0 +1,4 @@
+# The MSVC toolchain needs the C++ workload + Windows SDK; this machine only has
+# mingw-w64 (scoop), so pin the gnu toolchain for plain `cargo build`.
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"

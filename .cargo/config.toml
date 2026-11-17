@@ -1,0 +1,5 @@
+# mingw-w64 gcc used as the linker for the *-pc-windows-gnu target.
+# Adjust the path if your mingw lives elsewhere (e.g. /c/msys64/mingw64/bin/gcc.exe).
+[target.x86_64-pc-windows-gnu]
+linker = "C:/Users/admin/scoop/apps/mingw/current/bin/gcc.exe"
+rustflags = ["-C", "link-arg=-Wl,--dynamicbase"]
