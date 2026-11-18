@@ -10,7 +10,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shot_clipboard_annotate_test import (  # noqa: E402
-    BTN_SAVE, BTN_TEXT, TOOLBAR, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    BORDER, BTN_SAVE, BTN_TEXT, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
     button_labels, child_classes, clipboard_dib, count_color, dib_pixel, lparam,
     near, session_locked, wait_children, wait_window,
 )
@@ -34,16 +34,16 @@ def click_button(editor, hwnd_id):
 
 
 def drag(editor, x0, y0, x1, y1):
-    u.PostMessageW(editor, WM_LBUTTONDOWN, 0, lparam(x0, TOOLBAR + y0))
+    u.PostMessageW(editor, WM_LBUTTONDOWN, 0, lparam(BORDER + x0, BORDER + y0))
     time.sleep(0.1)
-    u.PostMessageW(editor, WM_MOUSEMOVE, 0, lparam(x1, TOOLBAR + y1))
+    u.PostMessageW(editor, WM_MOUSEMOVE, 0, lparam(BORDER + x1, BORDER + y1))
     time.sleep(0.1)
-    u.PostMessageW(editor, WM_LBUTTONUP, 0, lparam(x1, TOOLBAR + y1))
+    u.PostMessageW(editor, WM_LBUTTONUP, 0, lparam(BORDER + x1, BORDER + y1))
     time.sleep(0.2)
 
 
 def open_prompt(editor, x, y):
-    u.PostMessageW(editor, WM_LBUTTONDOWN, 0, lparam(x, TOOLBAR + y))
+    u.PostMessageW(editor, WM_LBUTTONDOWN, 0, lparam(BORDER + x, BORDER + y))
     return wait_window("RecRAnnotateText", 3.0)
 
 
@@ -62,7 +62,11 @@ def main():
         print("session is locked: unlock the desktop and rerun")
         return 0
 
+    if u.FindWindowW("RecRHost", None):
+        print("rec-r is already running; exit it before running this test")
+        return 2
     proc = subprocess.Popen([EXE, "app", "--http", "--addr", "127.0.0.1:7394"])
+    host = 0
     try:
         host = wait_window("RecRHost")
         if not host:
@@ -81,10 +85,12 @@ def main():
         if not editor:
             print("FAIL: no editor")
             return 1
-        wait_children(editor, "button", 8)
-        labels = button_labels(editor)
+        toolbar = wait_window("RecRAnnotateToolbar", 5.0)
+        assert toolbar, "separate toolbar did not appear"
+        wait_children(toolbar, "button", 8)
+        labels = button_labels(toolbar)
         print("labels:", labels)
-        assert len([c for _, c in child_classes(editor) if c.lower() == "button"]) == 8
+        assert len([c for _, c in child_classes(toolbar) if c.lower() == "button"]) == 8
         has_box = "Box" in labels
         print(f"box button: {has_box}")
         if not has_box:
@@ -92,11 +98,11 @@ def main():
             return 1
 
         # 1) Box tool: drag a rectangle, it must be painted in the current colour.
-        click_button(editor, BTN_BOX)
+        click_button(toolbar, BTN_BOX)
         drag(editor, 40, 60, 240, 180)
 
         # 2) Text prompt: Enter accepts.
-        click_button(editor, BTN_TEXT)
+        click_button(toolbar, BTN_TEXT)
         prompt = open_prompt(editor, 300, 200)
         if not prompt:
             print("FAIL: text prompt did not open")
@@ -118,7 +124,7 @@ def main():
         esc_closed = not u.IsWindow(prompt)
         print(f"prompt closed by Esc: {esc_closed}")
 
-        click_button(editor, BTN_SAVE)
+        click_button(toolbar, BTN_SAVE)
         time.sleep(0.8)
         if u.IsWindow(editor):
             print("FAIL: editor did not close on Save")
@@ -145,7 +151,8 @@ def main():
         print("RESULT:", "PASS" if ok else "FAIL")
         return 0 if ok else 1
     finally:
-        u.PostMessageW(host, WM_COMMAND, 4005, 0)
+        if host:
+            u.PostMessageW(host, WM_COMMAND, 4005, 0)
         time.sleep(0.5)
         if proc.poll() is None:
             proc.terminate()

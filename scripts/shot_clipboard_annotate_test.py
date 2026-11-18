@@ -46,7 +46,7 @@ WM_LBUTTONUP = 0x0202
 ID_SHOT_REGION = 2003
 ID_QUIT = 4005
 BTN_TEXT, BTN_MOSAIC, BTN_COLOR, BTN_SAVE = 6101, 6102, 6107, 6105
-TOOLBAR = 40
+BORDER = 2  # UI-only border around the screenshot
 WM_MOUSEMOVE_NOBTN = 0x0200
 
 # COLORREF values that must match TEXT_COLORS in src/gui/annotate.rs.
@@ -213,8 +213,9 @@ def main():
     if session_locked():
         print("session is locked: unlock the desktop and rerun")
         return 0
-    subprocess.run(["taskkill", "/IM", "rec-r.exe", "/F"], capture_output=True)
-    time.sleep(0.5)
+    if u.FindWindowW("RecRHost", None):
+        print("rec-r is already running; exit it before running this test")
+        return 2
     out_dir = os.path.join(os.path.expanduser("~"), "Videos", "Rec-R")
     before = set(glob.glob(os.path.join(out_dir, "*.png")))
 
@@ -248,10 +249,16 @@ def main():
         editor = wait_window("RecRAnnotate", 20)
         print("editor window:", hex(editor) if editor else None)
         assert editor, "annotation editor did not appear"
-        buttons = wait_children(editor, "button", 8)
-        print("editor buttons:", len(buttons))
-        assert len(buttons) == 8, [c.lower() for _, c in child_classes(editor)]
-        labels = button_labels(editor)
+        toolbar = wait_window("RecRAnnotateToolbar", 10)
+        assert toolbar, "separate toolbar did not appear"
+        buttons = wait_children(toolbar, "button", 8)
+        print("toolbar buttons:", len(buttons))
+        assert len(buttons) == 8, [c.lower() for _, c in child_classes(toolbar)]
+        image_rect, bar_rect = wt.RECT(), wt.RECT()
+        u.GetWindowRect(ctypes.c_void_p(editor), ctypes.byref(image_rect))
+        u.GetWindowRect(ctypes.c_void_p(toolbar), ctypes.byref(bar_rect))
+        assert bar_rect.bottom == image_rect.top, "toolbar must touch the top of the image"
+        labels = button_labels(toolbar)
         print("labels:", labels)
         color_label = next((t for t in labels if t.startswith("Color")), "")
         ok = color_label == "Color Orange"
@@ -259,25 +266,25 @@ def main():
 
         rc = wt.RECT()
         u.GetClientRect(ctypes.c_void_p(editor), ctypes.byref(rc))
-        disp_h = rc.bottom - TOOLBAR
-        print(f"editor client {rc.right}x{rc.bottom}, image area {rc.right}x{disp_h}")
-        # The region is small enough that the editor shows it 1:1, so image
-        # coordinates equal client coordinates minus the toolbar strip.
+        disp_w, disp_h = rc.right - 2 * BORDER, rc.bottom - 2 * BORDER
+        print(f"editor client {rc.right}x{rc.bottom}, image area {disp_w}x{disp_h}")
+        assert (disp_w, disp_h) == (REGION_W, REGION_H)
+        # Image coordinates are offset by the UI-only border.
         x0, y0 = 10, 10
-        x1, y1 = min(260, rc.right - 10), min(disp_h - 130, 130)
+        x1, y1 = min(260, disp_w - 10), min(disp_h - 130, 130)
 
-        u.PostMessageW(ctypes.c_void_p(editor), WM_COMMAND, BTN_MOSAIC, 0)
-        u.PostMessageW(ctypes.c_void_p(editor), WM_LBUTTONDOWN, 0, lparam(x0, TOOLBAR + y0))
+        u.PostMessageW(ctypes.c_void_p(toolbar), WM_COMMAND, BTN_MOSAIC, 0)
+        u.PostMessageW(ctypes.c_void_p(editor), WM_LBUTTONDOWN, 0, lparam(BORDER + x0, BORDER + y0))
         time.sleep(0.1)
-        u.PostMessageW(ctypes.c_void_p(editor), WM_MOUSEMOVE, 0, lparam(x1, TOOLBAR + y1))
+        u.PostMessageW(ctypes.c_void_p(editor), WM_MOUSEMOVE, 0, lparam(BORDER + x1, BORDER + y1))
         time.sleep(0.1)
-        u.PostMessageW(ctypes.c_void_p(editor), WM_LBUTTONUP, 0, lparam(x1, TOOLBAR + y1))
+        u.PostMessageW(ctypes.c_void_p(editor), WM_LBUTTONUP, 0, lparam(BORDER + x1, BORDER + y1))
         time.sleep(0.3)
 
         ty = max(disp_h - 60, 20)
         ty2 = max(ty - 60, 8)
         # Text tool: the cursor position is previewed as a caret in the current colour.
-        u.PostMessageW(ctypes.c_void_p(editor), WM_COMMAND, BTN_TEXT, 0)
+        u.PostMessageW(ctypes.c_void_p(toolbar), WM_COMMAND, BTN_TEXT, 0)
         hover = (200, 20)
         # TrackMouseEvent makes Windows post WM_MOUSELEAVE as soon as it notices the
         # real cursor is elsewhere, so park the pointer inside the window first.
@@ -289,14 +296,14 @@ def main():
         # any moment, so repost and re-read a few times before believing a miss.
         caret_px = None
         for _ in range(6):
-            u.SetCursorPos(wr.left + hover[0], wr.top + TOOLBAR + hover[1])
+            u.SetCursorPos(wr.left + BORDER + hover[0], wr.top + BORDER + hover[1])
             u.PostMessageW(
-                ctypes.c_void_p(editor), WM_MOUSEMOVE_NOBTN, 0, lparam(hover[0], TOOLBAR + hover[1])
+                ctypes.c_void_p(editor), WM_MOUSEMOVE_NOBTN, 0, lparam(BORDER + hover[0], BORDER + hover[1])
             )
             u.RedrawWindow(ctypes.c_void_p(editor), None, None, RDW_INVALIDATE | RDW_UPDATENOW)
             time.sleep(0.15)
             try:
-                caret_px = screen_pixel(editor, hover[0] + 1, TOOLBAR + hover[1] + 6)
+                caret_px = screen_pixel(editor, BORDER + hover[0] + 1, BORDER + hover[1] + 6)
             except Exception as exc:  # screen reading is best effort only
                 caret_px = None
                 print("caret pixel: skipped", exc)
@@ -312,17 +319,17 @@ def main():
         u.SetCursorPos(cur.x, cur.y)
 
         # First text in the default colour (orange).
-        type_text(editor, 30, TOOLBAR + ty, "hello rec-r")
+        type_text(editor, BORDER + 30, BORDER + ty, "hello rec-r")
 
         # Cycle the palette once and type again in red.
-        u.PostMessageW(ctypes.c_void_p(editor), WM_COMMAND, BTN_COLOR, 0)
+        u.PostMessageW(ctypes.c_void_p(toolbar), WM_COMMAND, BTN_COLOR, 0)
         time.sleep(0.2)
-        color_label = next((t for t in button_labels(editor) if t.startswith("Color")), "")
+        color_label = next((t for t in button_labels(toolbar) if t.startswith("Color")), "")
         print("colour label after click:", f"{color_label!r}")
         ok &= color_label == "Color Red"
-        type_text(editor, 30, TOOLBAR + ty2, "second line")
+        type_text(editor, BORDER + 30, BORDER + ty2, "second line")
 
-        u.PostMessageW(ctypes.c_void_p(editor), WM_COMMAND, BTN_SAVE, 0)
+        u.PostMessageW(ctypes.c_void_p(toolbar), WM_COMMAND, BTN_SAVE, 0)
 
         # The edited bitmap is encoded on a worker thread.
         new_files = []
@@ -341,8 +348,7 @@ def main():
         else:
             w, h, bpp, _, _ = dib
             print(f"clipboard DIB: {w}x{h} {bpp}bpp")
-            # The window is at least as wide as the toolbar, so compare against the
-            # dragged region instead of the client area.
+            # The output must contain only the selected region, not the toolbar.
             if (w, h) != (REGION_W, REGION_H):
                 print(f"clipboard size: FAIL (want {REGION_W}x{REGION_H}, got {w}x{h})")
                 ok = False
@@ -376,7 +382,8 @@ def main():
         try:
             app.wait(timeout=3)
         except subprocess.TimeoutExpired:
-            subprocess.run(["taskkill", "/IM", "rec-r.exe", "/F"], capture_output=True)
+            app.terminate()
+            app.wait(timeout=3)
 
 
 if __name__ == "__main__":

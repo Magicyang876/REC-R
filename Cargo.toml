@@ -1,6 +1,6 @@
 [package]
 name = "rec-r"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.88"
 description = "Screen capture & recording for Windows with an MCP server for agents"
@@ -36,6 +36,7 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
     "Win32_UI_Shell",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_HiDpi",

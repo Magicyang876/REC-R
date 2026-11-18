@@ -5,24 +5,25 @@
 //! coordinates are mapped back into image space, so annotations always land in
 //! the pixels that get saved.
 //!
-//! Tools: `T` text, `M` mosaic, `B` box. Keys: `Ctrl+Z` undo, `Enter` copy and
-//! save, `Esc` cancel. In the text prompt `Enter` is OK and `Esc` is Cancel.
+//! Tools: `T` text, `M` mosaic, `B` box. Keys: `Ctrl+Z` undo, `Ctrl+C` copy,
+//! `Ctrl+S` save, `Enter` copy and save, `Esc` cancel.
 
 use anyhow::{Context, Result};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen, CreateSolidBrush,
-    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, GetStockObject,
-    GetTextExtentPoint32W, InvalidateRect, IntersectClipRect, Rectangle, ReleaseDC, SelectObject,
+    BeginPaint, ClientToScreen, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen, CreateSolidBrush,
+    DeleteDC, DeleteObject, DrawFocusRect, DrawTextW, EndPaint, FillRect, GetDC, GetMonitorInfoW, GetStockObject,
+    GetTextExtentPoint32W, InvalidateRect, IntersectClipRect, MonitorFromRect, Rectangle, ReleaseDC, RoundRect, SelectObject,
     SetBkMode,
     SetStretchBltMode, SetTextColor, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    CLEARTYPE_QUALITY, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DIB_RGB_COLORS, DT_LEFT, DT_NOCLIP,
-    DT_NOPREFIX, DT_SINGLELINE, FF_DONTCARE, FW_BOLD, HALFTONE, HBRUSH, HDC, HGDIOBJ, NULL_BRUSH,
-    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, PS_DOT, PS_SOLID, SRCCOPY, TRANSPARENT,
+    CLEARTYPE_QUALITY, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOCLIP,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_BOLD, HALFTONE, HBRUSH, HDC, HGDIOBJ, NULL_BRUSH,
+    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, MONITORINFO, MONITOR_DEFAULTTONEAREST, PS_DOT, PS_SOLID, SRCCOPY, TRANSPARENT,
     VARIABLE_PITCH,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS, ODS_SELECTED};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetActiveWindow, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE,
     TRACKMOUSEEVENT, VK_CONTROL,
@@ -30,26 +31,29 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetClientRect, GetMessageW,
-    GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, HMENU, LoadCursorW, PostMessageW,
+    GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowTextW, HMENU, IsChild, LoadCursorW, MessageBoxW, PostMessageW,
     PostQuitMessage,
     RegisterClassW, SendMessageW, SetCursor, SetForegroundWindow, SetWindowLongPtrW,
     SetWindowTextW, ShowWindow,
-    TranslateMessage, CS_HREDRAW, CS_VREDRAW, ES_AUTOHSCROLL, GWLP_USERDATA, IDC_ARROW, IDC_CROSS,
-    IDC_IBEAM, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETFONT,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, ES_AUTOHSCROLL, GWLP_USERDATA, GW_OWNER, IDC_ARROW, IDC_CROSS,
+    IDC_IBEAM, MB_ICONERROR, MB_OK, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+    WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETFONT,
     WM_SETCURSOR,
     WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-    WS_SYSMENU, WS_VISIBLE, BS_DEFPUSHBUTTON, BS_PUSHBUTTON,
+    WS_SYSMENU, WS_VISIBLE, BS_DEFPUSHBUTTON, BS_OWNERDRAW, BS_PUSHBUTTON,
 };
 
 use crate::capture::Bitmap;
 use crate::geometry::Rect;
 
 const CLASS_NAME: PCWSTR = w!("RecRAnnotate");
+const TOOLBAR_CLASS: PCWSTR = w!("RecRAnnotateToolbar");
 const PROMPT_CLASS: PCWSTR = w!("RecRAnnotateText");
 
-/// Height of the in-window toolbar strip.
+/// Height of the separate toolbar window.
 const TOOLBAR: i32 = 40;
+/// UI-only border outside the screenshot pixels.
+const BORDER: i32 = 2;
 
 const BTN_TEXT: u32 = 6101;
 const BTN_MOSAIC: u32 = 6102;
@@ -98,6 +102,22 @@ enum Tool {
     Mosaic,
     Text,
     Box,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum EditorKey { Cancel, Save, Copy, Text, Mosaic, Box, Undo }
+
+fn editor_key(key: u32, ctrl: bool) -> Option<EditorKey> {
+    match (key, ctrl) {
+        (0x1B, _) => Some(EditorKey::Cancel),
+        (0x0D, _) | (0x53, true) => Some(EditorKey::Save),
+        (0x43, true) => Some(EditorKey::Copy),
+        (0x54, false) => Some(EditorKey::Text),
+        (0x4D, false) => Some(EditorKey::Mosaic),
+        (0x42, false) => Some(EditorKey::Box),
+        (0x5A, true) => Some(EditorKey::Undo),
+        _ => None,
+    }
 }
 
 enum Op {
@@ -158,11 +178,18 @@ impl Canvas {
     }
 }
 
+pub enum EditResult {
+    Save(Bitmap),
+    Copied,
+}
+
 struct Editor {
     base: Bitmap,
     canvas: Canvas,
     ops: Vec<Op>,
     tool: Tool,
+    toolbar: HWND,
+    tool_buttons: [HWND; 3],
     block: i32,
     block_btn: HWND,
     /// Index into [`TEXT_COLORS`].
@@ -178,13 +205,13 @@ struct Editor {
     disp_h: i32,
     /// Drag in progress, in image coordinates.
     drag: Option<(i32, i32, i32, i32)>,
-    result: Option<Bitmap>,
+    result: Option<EditResult>,
 }
 
 impl Editor {
     fn to_image(&self, x: i32, y: i32) -> (i32, i32) {
-        let ix = (x as f64 / self.scale).floor() as i32;
-        let iy = ((y - TOOLBAR) as f64 / self.scale).floor() as i32;
+        let ix = ((x - BORDER) as f64 / self.scale).floor() as i32;
+        let iy = ((y - BORDER) as f64 / self.scale).floor() as i32;
         (
             ix.clamp(0, self.base.width - 1),
             iy.clamp(0, self.base.height - 1),
@@ -193,8 +220,8 @@ impl Editor {
 
     fn to_disp(&self, x: i32, y: i32) -> (i32, i32) {
         (
-            (x as f64 * self.scale).round() as i32,
-            (y as f64 * self.scale).round() as i32 + TOOLBAR,
+            (x as f64 * self.scale).round() as i32 + BORDER,
+            (y as f64 * self.scale).round() as i32 + BORDER,
         )
     }
 
@@ -386,22 +413,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 ps.rcPaint.right,
                 ps.rcPaint.bottom,
             );
-            let mut rc = RECT::default();
-            let _ = GetClientRect(hwnd, &mut rc);
-
-            let brush: HBRUSH = CreateSolidBrush(COLORREF(0x00262626));
-            let bar = RECT { left: 0, top: 0, right: rc.right, bottom: TOOLBAR };
-            FillRect(hdc, &bar, brush);
-            // The toolbar can be wider than the image, so paint the rest too.
-            let body = RECT { left: 0, top: TOOLBAR, right: rc.right, bottom: rc.bottom };
-            FillRect(hdc, &body, brush);
+            let mut rect = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rect);
+            let brush = CreateSolidBrush(COLORREF(TEXT_COLORS[0].1));
+            FillRect(hdc, &rect, brush);
             let _ = DeleteObject(brush.into());
-
             let _ = SetStretchBltMode(hdc, HALFTONE);
             let _ = StretchBlt(
                 hdc,
-                0,
-                TOOLBAR,
+                BORDER,
+                BORDER,
                 st.disp_w,
                 st.disp_h,
                 Some(st.canvas.dc),
@@ -436,7 +457,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_ERASEBKGND => LRESULT(1),
         WM_LBUTTONDOWN => {
             let (mx, my) = (lo(lparam), hi(lparam));
-            if my >= TOOLBAR {
+            if mx >= BORDER && my >= BORDER && mx < BORDER + st.disp_w && my < BORDER + st.disp_h {
+                let _ = SetFocus(Some(hwnd));
                 let (ix, iy) = st.to_image(mx, my);
                 match st.tool {
                     Tool::Mosaic | Tool::Box => {
@@ -492,7 +514,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             } else if st.tool == Tool::Text {
                 // Preview the insertion point (and the current colour).
                 let before = caret_box(st, st.caret());
-                let hover = if my >= TOOLBAR { Some(st.to_image(mx, my)) } else { None };
+                let hover = if mx >= BORDER && my >= BORDER && mx < BORDER + st.disp_w && my < BORDER + st.disp_h {
+                    Some(st.to_image(mx, my))
+                } else {
+                    None
+                };
                 if st.hover != hover {
                     st.hover = hover;
                     invalidate(hwnd, [before, caret_box(st, st.caret())]);
@@ -548,7 +574,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     st.compose();
                 }
                 BTN_SAVE => {
-                    st.result = Some(st.canvas.snapshot());
+                    st.result = Some(EditResult::Save(st.canvas.snapshot()));
                     let _ = DestroyWindow(hwnd);
                     return LRESULT(0);
                 }
@@ -559,29 +585,43 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 _ => {}
             }
             let _ = InvalidateRect(Some(hwnd), None, false);
+            invalidate_tool_buttons(st);
             LRESULT(0)
         }
         WM_KEYDOWN => {
-            match wparam.0 as u32 {
-                0x1B => {
-                    // Esc
+            let control = GetKeyState(VK_CONTROL.0 as i32) < 0;
+            match editor_key(wparam.0 as u32, control) {
+                Some(EditorKey::Cancel) => { let _ = DestroyWindow(hwnd); return LRESULT(0); }
+                Some(EditorKey::Save) => {
+                    st.result = Some(EditResult::Save(st.canvas.snapshot()));
                     let _ = DestroyWindow(hwnd);
+                    return LRESULT(0);
                 }
-                0x0D => {
-                    // Enter
-                    st.result = Some(st.canvas.snapshot());
-                    let _ = DestroyWindow(hwnd);
+                Some(EditorKey::Copy) => {
+                    let bmp = st.canvas.snapshot();
+                    match crate::clipboard::set_bitmap(bmp.width, bmp.height, &bmp.data) {
+                        Ok(()) => {
+                            st.result = Some(EditResult::Copied);
+                            let _ = DestroyWindow(hwnd);
+                        }
+                        Err(e) => {
+                            let message = wide(&format!("Could not copy the screenshot: {e:#}"));
+                            let _ = MessageBoxW(Some(hwnd), PCWSTR(message.as_ptr()), w!("Rec-R"), MB_OK | MB_ICONERROR);
+                        }
+                    }
+                    return LRESULT(0);
                 }
-                0x54 => st.tool = Tool::Text,
-                0x4D => st.tool = Tool::Mosaic,
-                0x42 => st.tool = Tool::Box,
-                0x5A if GetKeyState(VK_CONTROL.0 as i32) < 0 => {
+                Some(EditorKey::Text) => st.tool = Tool::Text,
+                Some(EditorKey::Mosaic) => st.tool = Tool::Mosaic,
+                Some(EditorKey::Box) => st.tool = Tool::Box,
+                Some(EditorKey::Undo) => {
                     st.ops.pop();
                     st.compose();
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
-                _ => {}
+                None => {}
             }
+            invalidate_tool_buttons(st);
             LRESULT(0)
         }
         WM_SETCURSOR => {
@@ -600,6 +640,99 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_DESTROY => {
             PostQuitMessage(0);
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+unsafe fn invalidate_tool_buttons(st: &Editor) {
+    let id = match st.tool {
+        Tool::Text => BTN_TEXT,
+        Tool::Mosaic => BTN_MOSAIC,
+        Tool::Box => BTN_BOX,
+    };
+    if !st.toolbar.0.is_null() {
+        SetWindowLongPtrW(st.toolbar, GWLP_USERDATA, id as isize);
+    }
+    for &button in &st.tool_buttons {
+        if !button.0.is_null() {
+            let _ = InvalidateRect(Some(button), None, false);
+        }
+    }
+}
+
+unsafe fn draw_toolbar_button(item: &DRAWITEMSTRUCT, active_tool: u32) {
+    let dc = item.hDC;
+    let mut rect = item.rcItem;
+    let background = CreateSolidBrush(COLORREF(0x00261E1A));
+    FillRect(dc, &rect, background);
+    let _ = DeleteObject(background.into());
+    let pressed = item.itemState.0 & ODS_SELECTED.0 != 0;
+    let active = item.CtlID == active_tool;
+    let primary = item.CtlID == BTN_SAVE;
+    let (fill, border, text) = if primary {
+        (if pressed { 0x00006CD2 } else { 0x00008AFF }, 0x00008AFF, 0x001A1A1A)
+    } else if active {
+        (if pressed { 0x00324454 } else { 0x00304450 }, 0x00008AFF, 0x00FFFFFF)
+    } else {
+        (if pressed { 0x0050473D } else { 0x003C342C }, 0x005A5148, 0x00F3F1ED)
+    };
+    let brush = CreateSolidBrush(COLORREF(fill));
+    let pen = CreatePen(PS_SOLID, 1, COLORREF(border));
+    let old_brush = SelectObject(dc, brush.into());
+    let old_pen = SelectObject(dc, pen.into());
+    let _ = RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_brush);
+    let _ = DeleteObject(pen.into());
+    let _ = DeleteObject(brush.into());
+
+    let mut label = [0u16; 128];
+    let len = GetWindowTextW(item.hwndItem, &mut label).max(0) as usize;
+    let label = String::from_utf16_lossy(&label[..len.min(label.len())]).replace("&&", "&");
+    let mut label: Vec<u16> = label.encode_utf16().collect();
+    let old_font = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
+    SetBkMode(dc, TRANSPARENT);
+    let text = if item.itemState.0 & ODS_DISABLED.0 != 0 { 0x008C8884 } else { text };
+    SetTextColor(dc, COLORREF(text));
+    rect.left += 5;
+    rect.right -= 5;
+    let _ = DrawTextW(dc, &mut label, &mut rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(dc, old_font);
+    if item.itemState.0 & ODS_FOCUS.0 != 0 {
+        rect.top += 3;
+        rect.bottom -= 3;
+        let _ = DrawFocusRect(dc, &rect);
+    }
+}
+
+unsafe extern "system" fn toolbar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match msg {
+        WM_PAINT => {
+            let mut ps = windows::Win32::Graphics::Gdi::PAINTSTRUCT::default();
+            let dc = BeginPaint(hwnd, &mut ps);
+            let mut rect = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rect);
+            let brush: HBRUSH = CreateSolidBrush(COLORREF(0x00261E1A));
+            FillRect(dc, &rect, brush);
+            let _ = DeleteObject(brush.into());
+            let _ = EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => LRESULT(1),
+        WM_DRAWITEM => {
+            if lparam.0 != 0 {
+                let item = &*(lparam.0 as *const DRAWITEMSTRUCT);
+                draw_toolbar_button(item, GetWindowLongPtrW(hwnd, GWLP_USERDATA) as u32);
+                return LRESULT(1);
+            }
+            LRESULT(0)
+        }
+        WM_COMMAND | WM_CLOSE => {
+            if let Ok(owner) = GetWindow(hwnd, GW_OWNER) {
+                SendMessageW(owner, msg, Some(wparam), Some(lparam));
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -654,7 +787,36 @@ unsafe extern "system" fn prompt_proc(
     }
 }
 
-/// Small modal input box; returns the trimmed text or `None`.
+/// Use the monitor with the largest intersection, or the nearest one if off-screen.
+fn monitor_work_area(area: Option<Rect>) -> Rect {
+    unsafe {
+        let area = area.unwrap_or(Rect::new(0, 0, 1, 1));
+        let bounds = RECT { left: area.x, top: area.y, right: area.right(), bottom: area.bottom() };
+        let monitor = MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if GetMonitorInfoW(monitor, &mut info).as_bool() {
+            let r = info.rcWork;
+            Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top)
+        } else {
+            Rect::new(0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN))
+        }
+    }
+}
+
+fn window_position(work: Rect, anchor: Option<(i32, i32)>, width: i32, height: i32) -> (i32, i32) {
+    let (x, y) = anchor.unwrap_or((work.x + (work.width - width) / 2, work.y + (work.height - height) / 2));
+    (
+        x.clamp(work.x, (work.right() - width).max(work.x)),
+        y.clamp(work.y, (work.bottom() - height).max(work.y)),
+    )
+}
+
+fn toolbar_position(work: Rect, image: Rect, width: i32) -> (i32, i32) {
+    let x = image.x + (image.width - width) / 2;
+    (x.clamp(work.x, (work.right() - width).max(work.x)), image.y - TOOLBAR)
+}
+
+/// Small modal input box; x and y are the editor's client coordinates.
 fn prompt_text(owner: HWND, x: i32, y: i32) -> Option<String> {
     unsafe {
         let hinstance = GetModuleHandleW(None).ok()?;
@@ -667,16 +829,16 @@ fn prompt_text(owner: HWND, x: i32, y: i32) -> Option<String> {
         };
         RegisterClassW(&wc);
 
+        let mut point = POINT { x, y };
+        if !ClientToScreen(owner, &mut point).as_bool() {
+            return None;
+        }
+        let work = monitor_work_area(Some(Rect::new(point.x, point.y, 1, 1)));
+        let (w, h) = (400, 116);
+        let (px, py) = window_position(work, Some((point.x - 40, point.y - 60)), w, h);
+
         let state = Box::new(PromptState { edit: HWND::default(), value: None });
         let ptr = Box::into_raw(state);
-
-        let (w, h) = (400, 116);
-        let sx = GetSystemMetrics(SM_CXSCREEN);
-        let sy = GetSystemMetrics(SM_CYSCREEN);
-        let mut px = x - 40;
-        let mut py = y - 60;
-        px = px.clamp(0, (sx - w).max(0));
-        py = py.clamp(0, (sy - h).max(0));
 
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -778,34 +940,31 @@ fn prompt_text(owner: HWND, x: i32, y: i32) -> Option<String> {
 
 // --------------------------------------------------------------- entry point
 
-/// Let the user annotate `bmp`; `None` when cancelled.
-///
-/// `origin` is where the capture was taken from, so the editor appears over the
-/// same area instead of jumping to the middle of the screen. `copy` only changes
-/// the main button label — the clipboard write itself happens in
-/// [`crate::screenshot::finish`], driven by `copy_on_shot`.
-pub fn edit(bmp: Bitmap, origin: Option<Rect>, copy: bool) -> Result<Option<Bitmap>> {
+/// Let the user annotate `bmp`; `None` when cancelled. `Ctrl+C` copies directly
+/// and returns `Copied`; a save returns the bitmap for encoding by the caller.
+/// `origin` positions the editor over the captured area. `copy` controls the
+/// save-button label; the configured save-time copy happens in `screenshot::finish`.
+pub fn edit(bmp: Bitmap, origin: Option<Rect>, copy: bool) -> Result<Option<EditResult>> {
     unsafe {
-        let (sx, sy) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-        // Fit the capture on screen, but never scale it up.
-        let max_w = (sx - 80).max(320);
-        let max_h = (sy - TOOLBAR - 120).max(240);
+        let work = monitor_work_area(origin);
+        // Fit the capture on the selected monitor, but never scale it up.
+        let max_w = (work.width - 2 * BORDER - 80).max(1);
+        let max_h = (work.height - TOOLBAR - 2 * BORDER - 120).max(1);
         let scale = (max_w as f64 / bmp.width as f64)
             .min(max_h as f64 / bmp.height as f64)
-            .clamp(0.05, 1.0);
+            .min(1.0);
         let disp_w = ((bmp.width as f64 * scale).round() as i32).max(1);
         let disp_h = ((bmp.height as f64 * scale).round() as i32).max(1);
         let scale = disp_w as f64 / bmp.width as f64;
 
         let items = toolbar_items(16, copy);
         let widths = button_widths(&items);
-        let toolbar_w = 8 + widths.iter().map(|w_| w_ + 6).sum::<i32>();
-        let win_w = disp_w.max(toolbar_w).min(sx.max(320));
-        let win_h = TOOLBAR + disp_h;
-        let x = origin.map(|r| r.x).unwrap_or((sx - win_w) / 2);
-        let y = origin.map(|r| r.y).unwrap_or((sy - win_h) / 2);
-        let x = x.clamp(0, (sx - win_w).max(0));
-        let y = y.clamp(0, (sy - win_h).max(0));
+        let toolbar_w = (8 + widths.iter().map(|w_| w_ + 6).sum::<i32>()).min(work.width.max(1));
+        // Reserve room above the image so the toolbar never covers the capture.
+        let image_work = Rect::new(work.x, work.y + TOOLBAR, work.width, (work.height - TOOLBAR).max(1));
+        let (frame_w, frame_h) = (disp_w + 2 * BORDER, disp_h + 2 * BORDER);
+        let (x, y) = window_position(image_work, origin.map(|r| (r.x - BORDER, r.y - BORDER)), frame_w, frame_h);
+        let (toolbar_x, toolbar_y) = toolbar_position(work, Rect::new(x, y, frame_w, frame_h), toolbar_w);
 
         tracing::info!(
             "annotate: bitmap {}x{}, scale {scale:.3}, display {}x{}",
@@ -823,6 +982,8 @@ pub fn edit(bmp: Bitmap, origin: Option<Rect>, copy: bool) -> Result<Option<Bitm
             canvas,
             ops: Vec::new(),
             tool: Tool::Mosaic,
+            toolbar: HWND::default(),
+            tool_buttons: [HWND::default(); 3],
             block: 16,
             block_btn: HWND::default(),
             color: 0,
@@ -846,8 +1007,8 @@ pub fn edit(bmp: Bitmap, origin: Option<Rect>, copy: bool) -> Result<Option<Bitm
             WS_POPUP | WS_VISIBLE,
             x,
             y,
-            win_w,
-            win_h,
+            frame_w,
+            frame_h,
             None,
             None,
             Some(hinstance.into()),
@@ -855,12 +1016,28 @@ pub fn edit(bmp: Bitmap, origin: Option<Rect>, copy: bool) -> Result<Option<Bitm
         )?;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as isize);
 
-        // Toolbar buttons; the block size and colour buttons keep handles so their
-        // labels can change.
+        // An owned popup keeps the toolbar separate from the captured image.
+        let toolbar = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            TOOLBAR_CLASS,
+            w!("Rec-R annotation tools"),
+            WS_POPUP | WS_VISIBLE,
+            toolbar_x,
+            toolbar_y,
+            toolbar_w,
+            TOOLBAR,
+            Some(hwnd),
+            None,
+            Some(hinstance.into()),
+            None,
+        )?;
+        (*ptr).toolbar = toolbar;
+        SetWindowLongPtrW(toolbar, GWLP_USERDATA, BTN_MOSAIC as isize);
+
+        // The block size and colour buttons keep handles so their labels can change.
         let mut bx = 8;
         for ((id, label, _), w_) in items.into_iter().zip(widths) {
-            let style = if id == BTN_SAVE { BS_DEFPUSHBUTTON } else { BS_PUSHBUTTON };
-            let style = WINDOW_STYLE(style as u32);
+            let style = WINDOW_STYLE(BS_OWNERDRAW as u32);
             // `&` in a button label marks an accelerator, so a literal one is doubled.
             let label_w = wide(&label.replace('&', "&&"));
             let btn = CreateWindowExW(
@@ -872,7 +1049,7 @@ pub fn edit(bmp: Bitmap, origin: Option<Rect>, copy: bool) -> Result<Option<Bitm
                 8,
                 w_,
                 26,
-                Some(hwnd),
+                Some(toolbar),
                 Some(HMENU(id as usize as *mut core::ffi::c_void)),
                 Some(hinstance.into()),
                 None,
@@ -885,6 +1062,9 @@ pub fn edit(bmp: Bitmap, origin: Option<Rect>, copy: bool) -> Result<Option<Bitm
                 Some(LPARAM(0)),
             );
             match id {
+                BTN_TEXT => (*ptr).tool_buttons[0] = btn,
+                BTN_MOSAIC => (*ptr).tool_buttons[1] = btn,
+                BTN_BOX => (*ptr).tool_buttons[2] = btn,
                 BTN_BLOCK => (*ptr).block_btn = btn,
                 BTN_COLOR => (*ptr).color_btn = btn,
                 _ => {}
@@ -900,6 +1080,15 @@ pub fn edit(bmp: Bitmap, origin: Option<Rect>, copy: bool) -> Result<Option<Bitm
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+            // Buttons keep keyboard focus after a click; route editor shortcuts to
+            // the canvas instead of letting the focused button consume them.
+            if msg.message == WM_KEYDOWN
+                && (msg.hwnd == toolbar || IsChild(toolbar, msg.hwnd).as_bool())
+                && matches!(msg.wParam.0 as u32, 0x1B | 0x0D | 0x54 | 0x4D | 0x42 | 0x5A | 0x43 | 0x53)
+            {
+                SendMessageW(hwnd, WM_KEYDOWN, Some(msg.wParam), Some(msg.lParam));
+                continue;
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -909,7 +1098,8 @@ pub fn edit(bmp: Bitmap, origin: Option<Rect>, copy: bool) -> Result<Option<Bitm
             "annotate: {} op(s), {}",
             boxed.ops.len(),
             match &boxed.result {
-                Some(b) => format!("saved {}x{}", b.width, b.height),
+                Some(EditResult::Save(b)) => format!("save requested for {}x{}", b.width, b.height),
+                Some(EditResult::Copied) => "copied".to_string(),
                 None => "cancelled".to_string(),
             }
         );
@@ -993,6 +1183,262 @@ fn button_widths(items: &[(u32, String, Vec<String>)]) -> Vec<i32> {
     }
 }
 
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    #[test]
+    fn screenshot_shortcuts_require_control() {
+        assert_eq!(editor_key(0x43, true), Some(EditorKey::Copy));
+        assert_eq!(editor_key(0x43, false), None);
+        assert_eq!(editor_key(0x53, true), Some(EditorKey::Save));
+        assert_eq!(editor_key(0x53, false), None);
+        assert_eq!(editor_key(0x0D, false), Some(EditorKey::Save));
+        assert_eq!(editor_key(0x1B, false), Some(EditorKey::Cancel));
+        assert_eq!(editor_key(0x5A, true), Some(EditorKey::Undo));
+        assert_eq!(editor_key(0x54, false), Some(EditorKey::Text));
+        assert_eq!(editor_key(0x54, true), None);
+    }
+
+    #[test]
+    fn windows_stay_in_the_selected_work_area() {
+        let right = Rect::new(1920, 0, 1920, 1040);
+        assert_eq!(window_position(right, Some((2000, 100)), 600, 340), (2000, 100));
+        assert_eq!(window_position(right, Some((3800, 1000)), 600, 340), (3240, 700));
+
+        let left_above = Rect::new(-1920, -1080, 1920, 1040);
+        assert_eq!(window_position(left_above, Some((-1900, -1000)), 600, 340), (-1900, -1000));
+        assert_eq!(window_position(left_above, Some((-50, -10)), 600, 340), (-600, -380));
+        assert_eq!(window_position(left_above, None, 600, 340), (-1260, -730));
+        assert_eq!(window_position(left_above, Some((-50, -10)), 2500, 1500), (-1920, -1080));
+        assert_eq!(toolbar_position(right, Rect::new(2400, 200, 400, 300), 600), (2300, 160));
+        assert_eq!(toolbar_position(right, Rect::new(1920, 40, 400, 300), 600), (1920, 0));
+        assert_eq!(toolbar_position(left_above, Rect::new(-1200, -800, 400, 300), 600), (-1300, -840));
+    }
+
+    // Deliver a shortcut to a focused-style toolbar button without synthesizing
+    // system-wide keystrokes. Call only from the test's worker thread.
+    unsafe fn post_ctrl_shortcut(editor: HWND, key: u32) -> Result<()> {
+        use std::{thread, time::Duration};
+        use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, SetKeyboardState};
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetDlgItem, GetWindowThreadProcessId, IsWindow, PeekMessageW, PM_NOREMOVE};
+        let mut msg = MSG::default();
+        let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
+        let (from, to) = (GetCurrentThreadId(), GetWindowThreadProcessId(editor, None));
+        anyhow::ensure!(AttachThreadInput(from, to, true).as_bool(), "attach keyboard state failed");
+        let mut original_keys = [0u8; 256];
+        let result = (|| -> Result<()> {
+            GetKeyboardState(&mut original_keys)?;
+            let mut keys = original_keys;
+            keys[VK_CONTROL.0 as usize] |= 0x80;
+            SetKeyboardState(&keys)?;
+            let toolbar = FindWindowW(TOOLBAR_CLASS, PCWSTR::null())?;
+            let button = GetDlgItem(Some(toolbar), BTN_BOX as i32)?;
+            PostMessageW(Some(button), WM_KEYDOWN, WPARAM(key as usize), LPARAM(0))?;
+            for _ in 0..100 {
+                if !IsWindow(Some(editor)).as_bool() { break; }
+                thread::sleep(Duration::from_millis(20));
+            }
+            anyhow::ensure!(!IsWindow(Some(editor)).as_bool(), "shortcut did not close the editor");
+            Ok(())
+        })();
+        let _ = SetKeyboardState(&original_keys);
+        let _ = AttachThreadInput(from, to, false);
+        result
+    }
+
+    // Run explicitly on an unlocked desktop with a secondary display.
+    #[test]
+    #[ignore]
+    fn editor_and_prompt_use_secondary_monitor() -> Result<()> {
+        use std::{thread, time::{Duration, Instant}};
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetDlgItem, GetWindowRect, IsWindow};
+
+        crate::win::init_dpi_awareness();
+        let monitor = crate::win::monitor::list_monitors().into_iter()
+            .find(|m| !m.is_primary)
+            .context("requires a secondary monitor")?;
+        let work = monitor.work;
+        anyhow::ensure!(work.width >= 800 && work.height >= 600, "secondary work area too small");
+        unsafe {
+            anyhow::ensure!(FindWindowW(CLASS_NAME, PCWSTR::null()).is_err(), "an editor is already open");
+            anyhow::ensure!(FindWindowW(PROMPT_CLASS, PCWSTR::null()).is_err(), "a text prompt is already open");
+            anyhow::ensure!(FindWindowW(TOOLBAR_CLASS, PCWSTR::null()).is_err(), "a toolbar is already open");
+        }
+        let origin = Rect::new(work.x + 100, work.y + 100, 400, 300);
+        assert_eq!(monitor_work_area(Some(origin)), work);
+
+        let worker = thread::spawn(move || unsafe {
+            fn wait_for(class: PCWSTR) -> Result<HWND> {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while Instant::now() < deadline {
+                    if let Ok(hwnd) = unsafe { FindWindowW(class, PCWSTR::null()) } {
+                        return Ok(hwnd);
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                anyhow::bail!("window did not appear")
+            }
+            let editor = wait_for(CLASS_NAME)?;
+            let result = (|| -> Result<()> {
+                thread::sleep(Duration::from_millis(400));
+                let mut rect = RECT::default();
+                GetWindowRect(editor, &mut rect)?;
+                anyhow::ensure!(rect.left + BORDER == origin.x && rect.top + BORDER == origin.y, "editor position: {rect:?}");
+                anyhow::ensure!((rect.right - rect.left, rect.bottom - rect.top) == (400 + 2 * BORDER, 300 + 2 * BORDER), "canvas and border size: {rect:?}");
+                let toolbar = wait_for(TOOLBAR_CLASS)?;
+                let mut bar = RECT::default();
+                GetWindowRect(toolbar, &mut bar)?;
+                let frame = Rect::new(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+                let expected = toolbar_position(work, frame, bar.right - bar.left);
+                anyhow::ensure!((bar.left, bar.top) == expected && bar.bottom == rect.top, "toolbar position: {bar:?}");
+                let save_button = GetDlgItem(Some(toolbar), BTN_SAVE as i32)?;
+                let dc = GetDC(Some(save_button));
+                let fill = windows::Win32::Graphics::Gdi::GetPixel(dc, 8, 5);
+                ReleaseDC(Some(save_button), dc);
+                anyhow::ensure!(fill == COLORREF(0x00008AFF), "save button fill: {fill:?}");
+                PostMessageW(Some(toolbar), WM_COMMAND, WPARAM(BTN_TEXT as usize), LPARAM(0))?;
+                let (x, y) = (BORDER + 120, BORDER + 100);
+                PostMessageW(Some(editor), WM_LBUTTONDOWN, WPARAM(0), LPARAM(((y << 16) | x) as isize))?;
+                let prompt = wait_for(PROMPT_CLASS)?;
+                let mut prompt_rect = RECT::default();
+                let check = GetWindowRect(prompt, &mut prompt_rect)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|_| {
+                        let expected = window_position(work, Some((rect.left + x - 40, rect.top + y - 60)), 400, 116);
+                        anyhow::ensure!((prompt_rect.left, prompt_rect.top) == expected, "prompt position: {prompt_rect:?}, expected {expected:?}");
+                        Ok(())
+                    });
+                let _ = PostMessageW(Some(prompt), WM_KEYDOWN, WPARAM(0x1B), LPARAM(0));
+                check?;
+                for _ in 0..100 {
+                    if FindWindowW(PROMPT_CLASS, PCWSTR::null()).is_err() { break; }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                anyhow::ensure!(FindWindowW(PROMPT_CLASS, PCWSTR::null()).is_err(), "prompt did not close");
+                anyhow::ensure!(IsWindow(Some(editor)).as_bool(), "cancelling text should keep the editor open");
+                PostMessageW(Some(toolbar), WM_COMMAND, WPARAM(BTN_BOX as usize), LPARAM(0))?;
+                PostMessageW(Some(editor), WM_LBUTTONDOWN, WPARAM(0), LPARAM((60 << 16) | 40))?;
+                PostMessageW(Some(editor), WM_MOUSEMOVE, WPARAM(0), LPARAM((180 << 16) | 240))?;
+                PostMessageW(Some(editor), WM_LBUTTONUP, WPARAM(0), LPARAM((180 << 16) | 240))?;
+                // Exercise the message path when a toolbar button has focus.
+                let button = GetDlgItem(Some(toolbar), BTN_BOX as i32)?;
+                PostMessageW(Some(button), WM_KEYDOWN, WPARAM(0x1B), LPARAM(0))?;
+                for _ in 0..100 {
+                    if !IsWindow(Some(editor)).as_bool() { break; }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                anyhow::ensure!(!IsWindow(Some(editor)).as_bool(), "Esc did not close the editor");
+                anyhow::ensure!(!IsWindow(Some(toolbar)).as_bool(), "toolbar did not close with the editor");
+                Ok(())
+            })();
+            if let Ok(prompt) = FindWindowW(PROMPT_CLASS, PCWSTR::null()) {
+                let _ = PostMessageW(Some(prompt), WM_CLOSE, WPARAM(0), LPARAM(0));
+                thread::sleep(Duration::from_millis(100));
+            }
+            if IsWindow(Some(editor)).as_bool() {
+                let _ = PostMessageW(Some(editor), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+            result
+        });
+        let bmp = Bitmap { width: 400, height: 300, data: vec![0; 400 * 300 * 4] };
+        let edit_result = edit(bmp, Some(origin), true);
+        let check = worker.join().map_err(|_| anyhow::anyhow!("test worker panicked"))?;
+        anyhow::ensure!(edit_result?.is_none(), "cancelled annotation must not produce a bitmap");
+        check?;
+
+        // A second editor verifies the visible border is not part of the saved bitmap.
+        let worker = thread::spawn(|| unsafe {
+            use windows::Win32::Graphics::Gdi::GetPixel;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let editor = loop {
+                if let Ok(hwnd) = FindWindowW(CLASS_NAME, PCWSTR::null()) { break hwnd; }
+                anyhow::ensure!(Instant::now() < deadline, "editor did not reappear");
+                thread::sleep(Duration::from_millis(50));
+            };
+            thread::sleep(Duration::from_millis(400));
+            let dc = GetDC(Some(editor));
+            let border = GetPixel(dc, 0, 0);
+            let image = GetPixel(dc, BORDER + 10, BORDER + 10);
+            ReleaseDC(Some(editor), dc);
+            let result = (|| -> Result<()> {
+                anyhow::ensure!(border == COLORREF(TEXT_COLORS[0].1), "border pixel: {border:?}");
+                anyhow::ensure!(image == COLORREF(0x00102030), "image pixel: {image:?}");
+                post_ctrl_shortcut(editor, 0x53)
+            })();
+            if result.is_err() {
+                let _ = PostMessageW(Some(editor), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+            result
+        });
+        let data = [0x10, 0x20, 0x30, 0xff].repeat(400 * 300);
+        let output = edit(Bitmap { width: 400, height: 300, data: data.clone() }, Some(origin), true)?;
+        worker.join().map_err(|_| anyhow::anyhow!("test worker panicked"))??;
+        let Some(EditResult::Save(output)) = output else { anyhow::bail!("save should return a bitmap") };
+        anyhow::ensure!((output.width, output.height) == (400, 300) && output.data == data, "UI border changed saved pixels");
+        Ok(())
+    }
+
+    // This interactive test replaces the current Windows clipboard contents.
+    #[test]
+    #[ignore]
+    fn copy_shortcut_writes_clipboard() -> Result<()> {
+        use std::{thread, time::{Duration, Instant}};
+        use windows::Win32::Foundation::HGLOBAL;
+        use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+        use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, IsWindow};
+
+        crate::win::init_dpi_awareness();
+        unsafe { anyhow::ensure!(FindWindowW(CLASS_NAME, PCWSTR::null()).is_err(), "an editor is already open"); }
+        let worker = thread::spawn(|| unsafe {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let editor = loop {
+                if let Ok(hwnd) = FindWindowW(CLASS_NAME, PCWSTR::null()) { break hwnd; }
+                anyhow::ensure!(Instant::now() < deadline, "editor did not appear");
+                thread::sleep(Duration::from_millis(50));
+            };
+            thread::sleep(Duration::from_millis(400));
+            let result = post_ctrl_shortcut(editor, 0x43);
+            if result.is_err() {
+                if let Ok(dialog) = FindWindowW(w!("#32770"), w!("Rec-R")) {
+                    if GetWindow(dialog, GW_OWNER).ok() == Some(editor) {
+                        let _ = PostMessageW(Some(dialog), WM_CLOSE, WPARAM(0), LPARAM(0));
+                    }
+                }
+                if IsWindow(Some(editor)).as_bool() {
+                    let _ = PostMessageW(Some(editor), WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+            }
+            result
+        });
+        let data = [0x10, 0x20, 0x30, 0xff].repeat(400 * 300);
+        let result = edit(Bitmap { width: 400, height: 300, data }, None, true);
+        worker.join().map_err(|_| anyhow::anyhow!("test worker panicked"))??;
+        anyhow::ensure!(matches!(result?, Some(EditResult::Copied)), "Ctrl+C must return Copied");
+        unsafe {
+            OpenClipboard(None)?;
+            let check = (|| -> Result<()> {
+                let handle = HGLOBAL(GetClipboardData(8)?.0);
+                anyhow::ensure!(GlobalSize(handle) >= 43, "clipboard DIB is too short");
+                let ptr = GlobalLock(handle) as *const u8;
+                anyhow::ensure!(!ptr.is_null(), "GlobalLock failed");
+                let dib = std::slice::from_raw_parts(ptr, 43);
+                let width = i32::from_le_bytes(dib[4..8].try_into()?);
+                let height = i32::from_le_bytes(dib[8..12].try_into()?);
+                let valid = width == 400 && height == 300 && dib[40..43] == [0x10, 0x20, 0x30];
+                let _ = GlobalUnlock(handle);
+                anyhow::ensure!(valid, "clipboard DIB dimensions or pixels are wrong");
+                Ok(())
+            })();
+            let _ = CloseClipboard();
+            check?;
+        }
+        Ok(())
+    }
+}
+
 fn register_class() -> Result<()> {
     unsafe {
         let hinstance = GetModuleHandleW(None)?;
@@ -1005,6 +1451,12 @@ fn register_class() -> Result<()> {
             ..Default::default()
         };
         RegisterClassW(&wc);
+        let toolbar = WNDCLASSW {
+            lpfnWndProc: Some(toolbar_proc),
+            lpszClassName: TOOLBAR_CLASS,
+            ..wc
+        };
+        RegisterClassW(&toolbar);
     }
     Ok(())
 }

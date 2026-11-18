@@ -186,7 +186,11 @@ impl Host {
         // Text boxes / mosaic happen on the UI thread (it owns the window).
         let copy = self.app.config().copy_on_shot;
         let edited = match annotate::edit(bmp, Some(rect), copy) {
-            Ok(Some(b)) => b,
+            Ok(Some(annotate::EditResult::Save(b))) => b,
+            Ok(Some(annotate::EditResult::Copied)) => {
+                self.notify("Screenshot", "copied to clipboard", false);
+                return;
+            }
             Ok(None) => return,
             Err(e) => {
                 self.notify("Screenshot", &first_line(&format!("{e:#}")), true);
