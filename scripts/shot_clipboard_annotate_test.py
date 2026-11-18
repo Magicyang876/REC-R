@@ -39,6 +39,8 @@ WM_COMMAND = 0x0111
 WM_SETTEXT = 0x000C
 WM_LBUTTONDOWN = 0x0201
 WM_MOUSEMOVE = 0x0200
+RDW_INVALIDATE = 0x0001
+RDW_UPDATENOW = 0x0100
 WM_LBUTTONUP = 0x0202
 
 ID_SHOT_REGION = 2003
@@ -283,15 +285,24 @@ def main():
         u.GetWindowRect(ctypes.c_void_p(editor), ctypes.byref(wr))
         cur = wt.POINT()
         u.GetCursorPos(ctypes.byref(cur))
-        u.SetCursorPos(wr.left + hover[0], wr.top + TOOLBAR + hover[1])
-        time.sleep(0.2)
-        u.PostMessageW(ctypes.c_void_p(editor), WM_MOUSEMOVE_NOBTN, 0, lparam(hover[0], TOOLBAR + hover[1]))
-        time.sleep(0.4)
-        try:
-            caret_px = screen_pixel(editor, hover[0] + 1, TOOLBAR + hover[1] + 6)
-        except Exception as exc:  # screen reading is best effort only
-            caret_px = None
-            print("caret pixel: skipped", exc)
+        # A real mouse move (the person using the machine) can steal the hover at
+        # any moment, so repost and re-read a few times before believing a miss.
+        caret_px = None
+        for _ in range(6):
+            u.SetCursorPos(wr.left + hover[0], wr.top + TOOLBAR + hover[1])
+            u.PostMessageW(
+                ctypes.c_void_p(editor), WM_MOUSEMOVE_NOBTN, 0, lparam(hover[0], TOOLBAR + hover[1])
+            )
+            u.RedrawWindow(ctypes.c_void_p(editor), None, None, RDW_INVALIDATE | RDW_UPDATENOW)
+            time.sleep(0.15)
+            try:
+                caret_px = screen_pixel(editor, hover[0] + 1, TOOLBAR + hover[1] + 6)
+            except Exception as exc:  # screen reading is best effort only
+                caret_px = None
+                print("caret pixel: skipped", exc)
+                break
+            if caret_px and near(caret_px, ORANGE):
+                break
         if caret_px:
             if session_locked():
                 print("caret pixel: SKIP (session locked)")

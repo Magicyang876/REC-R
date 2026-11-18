@@ -124,6 +124,32 @@ pub fn stop_recording(app: &App, id: Option<&str>) -> Result<Vec<RecordingInfo>>
     app.recorder.stop(id)
 }
 
+/// Stop every active recording and delete what it wrote (Esc = throw it away).
+pub fn cancel_recording(app: &App, id: Option<&str>) -> Result<Vec<RecordingInfo>> {
+    let stopped = app.recorder.stop(id)?;
+    for info in &stopped {
+        // The muxer may still be closing the file, so retry briefly.
+        let mut last: Option<std::io::Error> = None;
+        for _ in 0..40 {
+            match std::fs::remove_file(&info.path) {
+                Ok(()) => {
+                    last = None;
+                    break;
+                }
+                Err(e) => {
+                    last = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+        match last {
+            None => tracing::info!("cancelled recording removed {}", info.path),
+            Some(e) => tracing::warn!("could not remove {}: {e}", info.path),
+        }
+    }
+    Ok(stopped)
+}
+
 pub fn recording_status(app: &App, id: Option<&str>) -> Vec<RecordingInfo> {
     app.recorder.status(id)
 }

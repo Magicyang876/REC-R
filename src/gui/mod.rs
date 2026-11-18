@@ -1,6 +1,7 @@
 //! Tray-hosted UI thread: menu, hotkeys, region overlay.
 
 pub mod annotate;
+pub mod esc;
 pub mod frame;
 pub mod overlay;
 pub mod tray;
@@ -270,6 +271,24 @@ impl Host {
         self.pending_frame = Some((rect, std::time::Instant::now()));
     }
 
+    /// Stop the running recording and throw the file away (Esc).
+    fn cancel_recording(&mut self) {
+        if !self.app.recorder.any_active() {
+            return;
+        }
+        tracing::info!("recording cancelled");
+        self.pending_frame = None;
+        let app = self.app.clone();
+        self.spawn("Recording", move || {
+            let stopped = actions::cancel_recording(&app, None)?;
+            if stopped.is_empty() {
+                return Ok("nothing was recording".to_string());
+            }
+            Ok(format!("cancelled, removed {}", stopped[0].path))
+        });
+        self.refresh_tip();
+    }
+
     /// Stop whatever is recording; shared by the stop hotkey and the menu.
     fn stop_recording(&self) {
         if !self.app.recorder.any_active() {
@@ -298,6 +317,15 @@ impl Host {
     /// Show the frame once the region recording is live, drop it when it ends.
     fn sync_frame(&mut self) {
         let active = self.app.recorder.any_active();
+        // Esc cancels a running recording, so the watcher lives exactly as long
+        // as something records (this also covers recordings started over MCP).
+        match (active, esc::installed()) {
+            (true, false) => {
+                esc::install(self.hwnd);
+            }
+            (false, true) => esc::uninstall(),
+            _ => {}
+        }
         if let Some((area, picked)) = self.pending_frame {
             if active {
                 self.pending_frame = None;
@@ -596,6 +624,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     HOTKEY_STOP => host.stop_recording(),
                     _ => {}
                 }
+            }
+            LRESULT(0)
+        }
+        esc::WM_CANCEL_RECORDING => {
+            if !ptr.is_null() {
+                (*ptr).cancel_recording();
             }
             LRESULT(0)
         }

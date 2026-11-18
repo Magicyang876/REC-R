@@ -14,7 +14,8 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, SIZE, WP
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen, CreateSolidBrush,
     DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, GetStockObject,
-    GetTextExtentPoint32W, InvalidateRect, Rectangle, ReleaseDC, SelectObject, SetBkMode,
+    GetTextExtentPoint32W, InvalidateRect, IntersectClipRect, Rectangle, ReleaseDC, SelectObject,
+    SetBkMode,
     SetStretchBltMode, SetTextColor, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
     CLEARTYPE_QUALITY, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DIB_RGB_COLORS, DT_LEFT, DT_NOCLIP,
     DT_NOPREFIX, DT_SINGLELINE, FF_DONTCARE, FW_BOLD, HALFTONE, HBRUSH, HDC, HGDIOBJ, NULL_BRUSH,
@@ -308,6 +309,43 @@ unsafe fn draw_caret(dc: HDC, x: i32, y: i32, height: i32, color: COLORREF) {
     let _ = DeleteObject(brush.into());
 }
 
+/// Client-space box the insertion marker would occupy, padded for its outline.
+///
+/// Repainting only these few pixels (instead of the whole window) is what stops
+/// the image from flickering while the pointer moves over it.
+fn caret_box(st: &Editor, at: Option<(i32, i32)>) -> Option<RECT> {
+    let (x, y) = at?;
+    if x >= st.base.width || y >= st.base.height {
+        return None;
+    }
+    let (dx, dy) = st.to_disp(x, y);
+    Some(RECT {
+        left: dx - 4,
+        top: dy - 4,
+        right: dx + 6,
+        bottom: dy + TEXT_SIZE + 8,
+    })
+}
+
+/// Client-space box of the dashed mosaic rubber band, padded for its pen.
+fn band_box(st: &Editor) -> Option<RECT> {
+    let (x0, y0, x1, y1) = st.drag?;
+    let (ax, ay) = st.to_disp(x0.min(x1), y0.min(y1));
+    let (bx, by) = st.to_disp(x0.max(x1), y0.max(y1));
+    Some(RECT {
+        left: ax - 3,
+        top: ay - 3,
+        right: bx + 3,
+        bottom: by + 3,
+    })
+}
+
+unsafe fn invalidate(hwnd: HWND, boxes: [Option<RECT>; 2]) {
+    for b in boxes.into_iter().flatten() {
+        let _ = InvalidateRect(Some(hwnd), Some(&b), false);
+    }
+}
+
 fn lo(lparam: LPARAM) -> i32 {
     (lparam.0 & 0xFFFF) as i16 as i32
 }
@@ -331,6 +369,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_PAINT => {
             let mut ps = windows::Win32::Graphics::Gdi::PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
+            // Only the damaged part is repainted, and the image is re-blitted
+            // inside that clip, so moving the pointer never flashes the canvas.
+            let _ = IntersectClipRect(
+                hdc,
+                ps.rcPaint.left,
+                ps.rcPaint.top,
+                ps.rcPaint.right,
+                ps.rcPaint.bottom,
+            );
             let mut rc = RECT::default();
             let _ = GetClientRect(hwnd, &mut rc);
 
@@ -390,8 +437,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     }
                     Tool::Text => {
                         // Show the insertion point while the input box is up.
+                        let mark = caret_box(st, Some((ix, iy)));
                         st.pending = Some((ix, iy));
-                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        invalidate(hwnd, [mark, None]);
                         let typed = prompt_text(hwnd, mx, my);
                         st.pending = None;
                         if let Some(text) = typed {
@@ -402,8 +450,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                                 color: TEXT_COLORS[st.color].1,
                             });
                             st.compose();
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        } else {
+                            // Cancelled: just put the image back under the marker.
+                            invalidate(hwnd, [mark, None]);
                         }
-                        let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                 }
             }
@@ -423,26 +474,29 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
             }
             if st.drag.is_some() {
+                let before = band_box(st);
                 let (ix, iy) = st.to_image(mx, my);
                 if let Some(d) = st.drag.as_mut() {
                     d.2 = ix;
                     d.3 = iy;
                 }
-                let _ = InvalidateRect(Some(hwnd), None, false);
+                invalidate(hwnd, [before, band_box(st)]);
             } else if st.tool == Tool::Text {
                 // Preview the insertion point (and the current colour).
+                let before = caret_box(st, st.caret());
                 let hover = if my >= TOOLBAR { Some(st.to_image(mx, my)) } else { None };
                 if st.hover != hover {
                     st.hover = hover;
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    invalidate(hwnd, [before, caret_box(st, st.caret())]);
                 }
             }
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
             st.tracking_leave = false;
+            let before = caret_box(st, st.hover);
             if st.hover.take().is_some() {
-                let _ = InvalidateRect(Some(hwnd), None, false);
+                invalidate(hwnd, [before, None]);
             }
             LRESULT(0)
         }
