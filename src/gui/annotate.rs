@@ -5,8 +5,8 @@
 //! coordinates are mapped back into image space, so annotations always land in
 //! the pixels that get saved.
 //!
-//! Keys: `T` text tool, `M` mosaic tool, `Ctrl+Z` undo, `Enter`/`Ctrl+S` copy and
-//! save, `Esc` cancel.
+//! Tools: `T` text, `M` mosaic, `B` box. Keys: `Ctrl+Z` undo, `Enter` copy and
+//! save, `Esc` cancel. In the text prompt `Enter` is OK and `Esc` is Cancel.
 
 use anyhow::{Context, Result};
 use windows::core::{w, PCWSTR};
@@ -19,7 +19,8 @@ use windows::Win32::Graphics::Gdi::{
     SetStretchBltMode, SetTextColor, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
     CLEARTYPE_QUALITY, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DIB_RGB_COLORS, DT_LEFT, DT_NOCLIP,
     DT_NOPREFIX, DT_SINGLELINE, FF_DONTCARE, FW_BOLD, HALFTONE, HBRUSH, HDC, HGDIOBJ, NULL_BRUSH,
-    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, PS_DOT, SRCCOPY, TRANSPARENT, VARIABLE_PITCH,
+    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, PS_DOT, PS_SOLID, SRCCOPY, TRANSPARENT,
+    VARIABLE_PITCH,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -29,7 +30,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetClientRect, GetMessageW,
-    GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, HMENU, LoadCursorW, PostQuitMessage,
+    GetSystemMetrics, GetWindowLongPtrW, GetWindowTextW, HMENU, LoadCursorW, PostMessageW,
+    PostQuitMessage,
     RegisterClassW, SendMessageW, SetCursor, SetForegroundWindow, SetWindowLongPtrW,
     SetWindowTextW, ShowWindow,
     TranslateMessage, CS_HREDRAW, CS_VREDRAW, ES_AUTOHSCROLL, GWLP_USERDATA, IDC_ARROW, IDC_CROSS,
@@ -56,6 +58,7 @@ const BTN_UNDO: u32 = 6104;
 const BTN_SAVE: u32 = 6105;
 const BTN_CANCEL: u32 = 6106;
 const BTN_COLOR: u32 = 6107;
+const BTN_BOX: u32 = 6108;
 
 /// `WM_MOUSELEAVE`; only exported from `Win32::UI::Controls`, not worth a feature.
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -94,11 +97,13 @@ const TEXT_SIZE: i32 = 22;
 enum Tool {
     Mosaic,
     Text,
+    Box,
 }
 
 enum Op {
     Mosaic { x: i32, y: i32, w: i32, h: i32, block: i32 },
     Text { x: i32, y: i32, text: String, color: u32 },
+    Box { x: i32, y: i32, w: i32, h: i32, color: u32 },
 }
 
 /// A `DIB` section we can draw into and read back.
@@ -197,7 +202,7 @@ impl Editor {
     fn caret(&self) -> Option<(i32, i32)> {
         match self.tool {
             Tool::Text => self.pending.or(self.hover),
-            Tool::Mosaic => None,
+            Tool::Mosaic | Tool::Box => None,
         }
     }
 
@@ -216,6 +221,9 @@ impl Editor {
                     ),
                     Op::Text { x, y, text, color } => {
                         draw_text(self.canvas.dc, *x, *y, text, TEXT_SIZE, COLORREF(*color))
+                    }
+                    Op::Box { x, y, w, h, color } => {
+                        draw_box(self.canvas.dc, *x, *y, *w, *h, COLORREF(*color))
                     }
                 }
             }
@@ -431,7 +439,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if my >= TOOLBAR {
                 let (ix, iy) = st.to_image(mx, my);
                 match st.tool {
-                    Tool::Mosaic => {
+                    Tool::Mosaic | Tool::Box => {
                         st.drag = Some((ix, iy, ix, iy));
                         SetCapture(hwnd);
                     }
@@ -508,7 +516,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let w = x0.max(ix).max(x1) - x;
                 let h = y0.max(iy).max(y1) - y;
                 if w >= 3 && h >= 3 {
-                    st.ops.push(Op::Mosaic { x, y, w, h, block: st.block });
+                    let op = match st.tool {
+                        Tool::Box => Op::Box { x, y, w, h, color: TEXT_COLORS[st.color].1 },
+                        _ => Op::Mosaic { x, y, w, h, block: st.block },
+                    };
+                    st.ops.push(op);
                     st.compose();
                 }
                 let _ = InvalidateRect(Some(hwnd), None, false);
@@ -519,6 +531,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             match (wparam.0 & 0xFFFF) as u32 {
                 BTN_TEXT => st.tool = Tool::Text,
                 BTN_MOSAIC => st.tool = Tool::Mosaic,
+                BTN_BOX => st.tool = Tool::Box,
                 BTN_COLOR => {
                     st.color = (st.color + 1) % TEXT_COLORS.len();
                     let label = wide(&format!("Color {}", TEXT_COLORS[st.color].0));
@@ -561,6 +574,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
                 0x54 => st.tool = Tool::Text,
                 0x4D => st.tool = Tool::Mosaic,
+                0x42 => st.tool = Tool::Box,
                 0x5A if GetKeyState(VK_CONTROL.0 as i32) < 0 => {
                     st.ops.pop();
                     st.compose();
@@ -573,7 +587,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_SETCURSOR => {
             let cursor = match st.tool {
                 Tool::Text => IDC_IBEAM,
-                Tool::Mosaic => IDC_CROSS,
+                Tool::Mosaic | Tool::Box => IDC_CROSS,
             };
             if let Ok(c) = LoadCursorW(None, cursor) {
                 SetCursor(Some(c));
@@ -737,6 +751,19 @@ fn prompt_text(owner: HWND, x: i32, y: i32) -> Option<String> {
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+            // Enter accepts and Esc cancels whatever control has focus; the edit
+            // box would otherwise swallow both keys.
+            if msg.message == WM_KEYDOWN {
+                let chosen = match msg.wParam.0 as u32 {
+                    0x0D => Some(PROMPT_OK),
+                    0x1B => Some(PROMPT_CANCEL),
+                    _ => None,
+                };
+                if let Some(id) = chosen {
+                    let _ = PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(id as usize), LPARAM(0));
+                    continue;
+                }
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -891,6 +918,19 @@ pub fn edit(bmp: Bitmap, origin: Option<Rect>, copy: bool) -> Result<Option<Bitm
     }
 }
 
+/// Rectangle outline in `color`, with a thin contrasting inner line so it stays
+/// readable on both light and dark backgrounds.
+unsafe fn draw_box(dc: HDC, x: i32, y: i32, w: i32, h: i32, color: COLORREF) {
+    let (x1, y1) = (x + w, y + h);
+    let pen = CreatePen(PS_SOLID, 3, color);
+    let old_pen = SelectObject(dc, pen.into());
+    let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    let _ = Rectangle(dc, x, y, x1, y1);
+    SelectObject(dc, old_brush);
+    SelectObject(dc, old_pen);
+    let _ = DeleteObject(pen.into());
+}
+
 /// Toolbar layout: `(id, label, alternative labels)`. The alternatives are used
 /// only to size the button, so it never clips when its label changes.
 fn toolbar_items(block: i32, copy: bool) -> Vec<(u32, String, Vec<String>)> {
@@ -907,6 +947,7 @@ fn toolbar_items(block: i32, copy: bool) -> Vec<(u32, String, Vec<String>)> {
     vec![
         (BTN_TEXT, "Text".to_string(), vec!["Text".to_string()]),
         (BTN_MOSAIC, "Mosaic".to_string(), vec!["Mosaic".to_string()]),
+        (BTN_BOX, "Box".to_string(), vec!["Box".to_string()]),
         (BTN_BLOCK, format!("Block {block}"), block_labels),
         (
             BTN_COLOR,

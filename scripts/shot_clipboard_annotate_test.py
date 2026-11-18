@@ -248,9 +248,9 @@ def main():
         editor = wait_window("RecRAnnotate", 20)
         print("editor window:", hex(editor) if editor else None)
         assert editor, "annotation editor did not appear"
-        buttons = wait_children(editor, "button", 7)
+        buttons = wait_children(editor, "button", 8)
         print("editor buttons:", len(buttons))
-        assert len(buttons) == 7, [c.lower() for _, c in child_classes(editor)]
+        assert len(buttons) == 8, [c.lower() for _, c in child_classes(editor)]
         labels = button_labels(editor)
         print("labels:", labels)
         color_label = next((t for t in labels if t.startswith("Color")), "")

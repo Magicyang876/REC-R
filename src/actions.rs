@@ -15,6 +15,9 @@ use crate::capture::Bitmap;
 use crate::recording::{self, Engine, RecordOptions, RecordingInfo};
 use crate::screenshot::{self, ShotOptions, ShotResult};
 use crate::win::{monitor, window};
+use windows::core::PCWSTR;
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 const QUALITIES: [&str; 4] = ["lossless", "high", "balanced", "fast"];
 
@@ -343,13 +346,80 @@ pub fn doctor(app: &App) -> DoctorReport {
 
 // -------------------------------------------------------------------- misc
 
+/// Ask the shell to open `path` (a folder, or a file with its default app).
+///
+/// `cmd /C start` was silently doing nothing here: it flashes a console and
+/// relies on shell associations + DDE to the running Explorer, which does not
+/// reach us from a detached tray process. A folder is therefore handed straight
+/// to `explorer.exe` (works even when DDE is dead); files go through
+/// `ShellExecuteW` first and fall back to Explorer's `/select,` mode.
 pub fn open_path(path: &Path) -> Result<()> {
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", &path.to_string_lossy()])
-        .current_dir(path.parent().unwrap_or(Path::new(".")))
+    let text = path.to_string_lossy().to_string();
+    if !path.exists() {
+        anyhow::bail!("{} does not exist", path.display());
+    }
+
+    if path.is_dir() {
+        return explorer(&text);
+    }
+
+    // Text-ish files of our own (config, doctor report) open in Notepad: the
+    // association for `.json` is unpredictable (on this machine it went to some
+    // unrelated "Product_Upgrade" app) and the point is to show the contents.
+    let texty = matches!(
+        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("json" | "txt" | "log" | "md" | "toml" | "ini" | "csv")
+    );
+    if texty {
+        return notepad(&text);
+    }
+
+    unsafe {
+        let verb = wide("open");
+        let file = wide(&text);
+        // SAFETY: both strings are NUL-terminated and outlive the call.
+        let rc = ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        let code = rc.0 as isize;
+        if code > 32 {
+            tracing::info!("ShellExecuteW opened {} ({code})", path.display());
+            return Ok(());
+        }
+        tracing::warn!("ShellExecuteW returned {code} for {}", path.display());
+    }
+
+    // No handler for this extension: a plain text editor is the useful default.
+    notepad(&text)
+}
+
+fn notepad(text: &str) -> Result<()> {
+    let child = std::process::Command::new("notepad.exe")
+        .arg(text)
         .spawn()
-        .with_context(|| format!("failed to open {}", path.display()))?;
+        .with_context(|| format!("failed to open {text} in notepad"))?;
+    tracing::info!("notepad.exe pid {} -> {text}", child.id());
     Ok(())
+}
+
+fn explorer(arg: &str) -> Result<()> {
+    let child = std::process::Command::new("explorer.exe")
+        .arg(arg)
+        .spawn()
+        .with_context(|| format!("failed to start explorer.exe {arg}"))?;
+    // Explorer hands the request to its existing instance and exits, so the exit
+    // code means nothing; what matters is that we asked.
+    tracing::info!("explorer.exe pid {} -> {arg}", child.id());
+    Ok(())
+}
+
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 pub fn target_from_parts(

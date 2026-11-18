@@ -450,21 +450,27 @@ impl Host {
             }
             tray::ID_REC_REGION => self.record_region(),
             tray::ID_REC_STOP => self.record_stop(),
-            tray::ID_OPEN_OUTPUT => {
-                if let Ok(dir) = self.app.config().ensure_output_dir() {
-                    let _ = actions::open_path(&dir);
+            tray::ID_OPEN_OUTPUT => match self.app.config().ensure_output_dir() {
+                Ok(dir) => {
+                    if let Err(e) = actions::open_path(&dir) {
+                        self.notify("Open output folder", &format!("{e:#}"), true);
+                    }
                 }
-            }
+                Err(e) => self.notify("Open output folder", &format!("{e:#}"), true),
+            },
             tray::ID_MCP_INFO => self.show_mcp_info(),
             tray::ID_COPY_MCP => self.copy_mcp_config(),
             tray::ID_RESTART => self.restart(),
             tray::ID_DOCTOR => self.run_doctor(),
             tray::ID_CONFIG => {
                 let path = crate::config::config_path();
-                if !path.exists() {
-                    let _ = self.app.config().save();
+                // Keep the file on disk in sync with what the tray is using.
+                if let Err(e) = self.app.config().save() {
+                    tracing::warn!("could not write {}: {e:#}", path.display());
                 }
-                let _ = actions::open_path(&path);
+                if let Err(e) = actions::open_path(&path) {
+                    self.notify("Config file", &format!("{e:#}\n{}", path.display()), true);
+                }
             }
             tray::ID_HOTKEYS => self.show_hotkeys(),
             tray::ID_AUTOSTART => self.toggle_autostart(),
