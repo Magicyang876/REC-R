@@ -18,8 +18,8 @@ Windows 上的截图 / 录屏工具，用 Rust 写，FFmpeg 负责编码，并�
 
 ```powershell
 # 装到 %LOCALAPPDATA%\Programs\Rec-R，加 PATH 和开始菜单快捷方式
-.\rec-r-0.1.0-x86_64-pc-windows-gnu.exe install
-.\rec-r-0.1.0-x86_64-pc-windows-gnu.exe install --autostart --http   # 顺手开机自启 + 开 MCP HTTP
+.\rec-r-0.1.1-x86_64-pc-windows-gnu.exe install
+.\rec-r-0.1.1-x86_64-pc-windows-gnu.exe install --autostart --http   # 顺手开机自启 + 开 MCP HTTP
 ```
 
 也可以不安装：exe 放哪都行，双击进托盘，或 `rec-r shot` / `rec-r serve --stdio` 直接用。
@@ -73,14 +73,21 @@ export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=C:/msys64/mingw64/bin/gcc.exe
 
 ### 如果编译出来的 exe 一启动就崩
 
-GNU ld 2.47（mingw-w64 16.2.0 自带）在合并同名 DLL 的多份 `.idata$2` 描述符时可能吞掉一部分，
-结果是导入表里少了 `TlsAlloc`、`CreateFileW`、`GetLastError` 这一批 std 用到的槽位——
-Windows 加载器不会填它们，于是启动瞬间跳到数据区，连 `--help` 都直接 `Segmentation fault`。
+一种可能的原因是 `PATH` 中的 `dlltool.exe` 实际是 LLVM 版本，而链接器使用了 GNU ld。
+本机测试中，多个 Rust 库通过 LLVM dlltool 导入同一 DLL 时，GNU ld 生成的导入描述符未覆盖所有
+IAT 槽位；Windows 加载器因此不会填充这些槽位，程序可能在启动时崩溃。问题不只限于 GNU ld 2.47。
 
-判断方法：看 PE 的导入描述符数量和 std 的导入名是否齐全，坏产物通常比正常产物少 4~5 个
-`kernel32.dll` 描述符分组，`TlsAlloc` 的 IAT 槽位不在任何分组的范围内。
+首先检查 `where.exe dlltool` 和 `dlltool --version`，并让 Rust 明确使用与 gcc 配套的 GNU dlltool：
 
-绕开办法是用 rustup 自带的 LLVM 链接器（`rust-lld`）代替 GNU ld，不需要额外安装：
+```bash
+# 路径改为本机 MinGW 的 dlltool.exe；RUSTFLAGS 会覆盖配置文件中的 rustflags
+export RUSTFLAGS="-C dlltool=C:/msys64/mingw64/bin/dlltool.exe -C link-arg=-Wl,--dynamicbase"
+cargo build --release
+./target/release/rec-r.exe --help
+```
+
+也可以把 `"-C", "dlltool=C:/msys64/mingw64/bin/dlltool.exe"` 加到本机的
+`.cargo/config.toml` 的 `rustflags` 中。或者使用 rustup 自带的 LLVM 链接器（`rust-lld`）：
 
 ```bash
 # rust-lld 伪装成 ld.lld，交给 gcc 调用
