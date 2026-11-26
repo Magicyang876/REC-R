@@ -18,8 +18,8 @@ Windows 上的截图 / 录屏工具，用 Rust 写，FFmpeg 负责编码，并�
 
 ```powershell
 # 装到 %LOCALAPPDATA%\Programs\Rec-R，加 PATH 和开始菜单快捷方式
-.\rec-r-0.1.2-x86_64-pc-windows-gnu.exe install
-.\rec-r-0.1.2-x86_64-pc-windows-gnu.exe install --autostart --http   # 顺手开机自启 + 开 MCP HTTP
+.\rec-r-0.1.3-x86_64-pc-windows-gnu.exe install
+.\rec-r-0.1.3-x86_64-pc-windows-gnu.exe install --autostart --http   # 顺手开机自启 + 开 MCP HTTP
 ```
 
 也可以不安装：exe 放哪都行，双击进托盘，或 `rec-r shot` / `rec-r serve --stdio` 直接用。
