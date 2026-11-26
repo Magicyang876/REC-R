@@ -87,10 +87,10 @@ def main():
             return 1
         toolbar = wait_window("RecRAnnotateToolbar", 5.0)
         assert toolbar, "separate toolbar did not appear"
-        wait_children(toolbar, "button", 8)
+        wait_children(toolbar, "button", 9)
         labels = button_labels(toolbar)
         print("labels:", labels)
-        assert len([c for _, c in child_classes(toolbar) if c.lower() == "button"]) == 8
+        assert len([c for _, c in child_classes(toolbar) if c.lower() == "button"]) == 9
         has_box = "Box" in labels
         print(f"box button: {has_box}")
         if not has_box:

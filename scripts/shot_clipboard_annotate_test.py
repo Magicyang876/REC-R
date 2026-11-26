@@ -251,9 +251,9 @@ def main():
         assert editor, "annotation editor did not appear"
         toolbar = wait_window("RecRAnnotateToolbar", 10)
         assert toolbar, "separate toolbar did not appear"
-        buttons = wait_children(toolbar, "button", 8)
+        buttons = wait_children(toolbar, "button", 9)
         print("toolbar buttons:", len(buttons))
-        assert len(buttons) == 8, [c.lower() for _, c in child_classes(toolbar)]
+        assert len(buttons) == 9, [c.lower() for _, c in child_classes(toolbar)]
         image_rect, bar_rect = wt.RECT(), wt.RECT()
         u.GetWindowRect(ctypes.c_void_p(editor), ctypes.byref(image_rect))
         u.GetWindowRect(ctypes.c_void_p(toolbar), ctypes.byref(bar_rect))

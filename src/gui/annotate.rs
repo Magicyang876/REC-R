@@ -31,7 +31,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetClientRect, GetMessageW,
-    GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowTextW, HMENU, IsChild, LoadCursorW, MessageBoxW, PostMessageW,
+    GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW, HMENU, IsChild, LoadCursorW,
+    MessageBoxW, PostMessageW,
     PostQuitMessage,
     RegisterClassW, SendMessageW, SetCursor, SetForegroundWindow, SetWindowLongPtrW,
     SetWindowTextW, ShowWindow,
@@ -63,6 +64,7 @@ const BTN_SAVE: u32 = 6105;
 const BTN_CANCEL: u32 = 6106;
 const BTN_COLOR: u32 = 6107;
 const BTN_BOX: u32 = 6108;
+const BTN_PIN: u32 = 6109;
 
 /// `WM_MOUSELEAVE`; only exported from `Win32::UI::Controls`, not worth a feature.
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -127,17 +129,17 @@ enum Op {
 }
 
 /// A `DIB` section we can draw into and read back.
-struct Canvas {
-    dc: HDC,
+pub(crate) struct Canvas {
+    pub(crate) dc: HDC,
     bmp: windows::Win32::Graphics::Gdi::HBITMAP,
     bits: *mut u8,
     old: HGDIOBJ,
-    width: i32,
-    height: i32,
+    pub(crate) width: i32,
+    pub(crate) height: i32,
 }
 
 impl Canvas {
-    fn new(width: i32, height: i32) -> Result<Self> {
+    pub(crate) fn new(width: i32, height: i32) -> Result<Self> {
         unsafe {
             let dc = CreateCompatibleDC(None);
             anyhow::ensure!(!dc.is_invalid(), "CreateCompatibleDC failed");
@@ -160,7 +162,7 @@ impl Canvas {
         }
     }
 
-    unsafe fn upload(&mut self, data: &[u8]) {
+    pub(crate) unsafe fn upload(&mut self, data: &[u8]) {
         let len = (self.width * self.height * 4) as usize;
         std::ptr::copy_nonoverlapping(data.as_ptr(), self.bits, len.min(data.len()));
     }
@@ -171,7 +173,7 @@ impl Canvas {
         Bitmap { width: self.width, height: self.height, data }
     }
 
-    unsafe fn destroy(&mut self) {
+    pub(crate) unsafe fn destroy(&mut self) {
         SelectObject(self.dc, self.old);
         let _ = DeleteObject(self.bmp.into());
         let _ = DeleteDC(self.dc);
@@ -568,6 +570,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     st.block = BLOCK_SIZES[(i + 1) % BLOCK_SIZES.len()];
                     let label = wide(&format!("Block {}", st.block));
                     let _ = SetWindowTextW(st.block_btn, PCWSTR(label.as_ptr()));
+                }
+                BTN_PIN => {
+                    // Freeze the capture where it is, then close the editor so
+                    // the pinned window is visible.
+                    let mut rect = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut rect);
+                    if let Err(e) = crate::gui::pin::pin(
+                        st.canvas.snapshot(),
+                        rect.left + BORDER,
+                        rect.top + BORDER,
+                    ) {
+                        let message = wide(&format!("Could not pin the screenshot: {e:#}"));
+                        let _ = MessageBoxW(Some(hwnd), PCWSTR(message.as_ptr()), w!("Rec-R"), MB_OK | MB_ICONERROR);
+                    } else {
+                        let _ = DestroyWindow(hwnd);
+                        return LRESULT(0);
+                    }
                 }
                 BTN_UNDO => {
                     st.ops.pop();
@@ -1135,6 +1154,7 @@ fn toolbar_items(block: i32, copy: bool) -> Vec<(u32, String, Vec<String>)> {
         out
     };
     vec![
+        (BTN_PIN, "Pin".to_string(), vec!["Pin".to_string()]),
         (BTN_TEXT, "Text".to_string(), vec!["Text".to_string()]),
         (BTN_MOSAIC, "Mosaic".to_string(), vec!["Mosaic".to_string()]),
         (BTN_BOX, "Box".to_string(), vec!["Box".to_string()]),
@@ -1198,6 +1218,13 @@ mod placement_tests {
         assert_eq!(editor_key(0x5A, true), Some(EditorKey::Undo));
         assert_eq!(editor_key(0x54, false), Some(EditorKey::Text));
         assert_eq!(editor_key(0x54, true), None);
+    }
+
+    #[test]
+    fn pin_button_sits_before_text() {
+        let items = toolbar_items(16, false);
+        assert_eq!(items[0].0, BTN_PIN);
+        assert_eq!(items[1].0, BTN_TEXT);
     }
 
     #[test]

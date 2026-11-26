@@ -4,6 +4,7 @@ pub mod annotate;
 pub mod esc;
 pub mod frame;
 pub mod overlay;
+pub mod pin;
 pub mod tray;
 
 use std::sync::Arc;
